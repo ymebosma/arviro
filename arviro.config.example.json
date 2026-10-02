@@ -1,0 +1,41 @@
+{
+  "dataDir": "~/.local/share/arviro",
+  "sources": {
+    "library": {
+      "path": "~/Library/Offline",
+      "description": "Offline reference library: emergency plans, first aid, survival guides and technical manuals.",
+      "expandQueries": true,
+      "routes": [
+        { "prefix": "medical", "terms": ["first aid", "eerste hulp", "medical", "medisch"] }
+      ]
+    },
+    "notes": {
+      "path": "~/Notes",
+      "description": "Personal notes.",
+      "private": true
+    }
+  },
+  "kiwix": {
+    "zimDir": "~/Library/Offline/zim",
+    "port": 8767,
+    "descriptions": {
+      "wikipedia": "Wikipedia (offline): general knowledge, people, places and organisations.",
+      "wikivoyage": "Wikivoyage (offline): travel guides."
+    }
+  },
+  "maps": {
+    "regions": {
+      "nl": "~/Library/Offline/maps/netherlands-latest.osm.pbf"
+    }
+  },
+  "embedding": {
+    "provider": "ollama",
+    "url": "http://127.0.0.1:11434",
+    "model": "qwen3-embedding:0.6b",
+    "dimensions": 512
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "arviro",
+  "version": "0.1.0",
+  "description": "Arviro: an MCP server that lets a local LLM search and read your offline library (documents, Kiwix ZIM encyclopedias and OpenStreetMap data).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "arviro": "bin/arviro.js"
+  },
+  "scripts": {
+    "start": "node bin/arviro.js serve",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "zod": "^4.6.5"
+  }
+}

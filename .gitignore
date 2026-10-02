@@ -1,0 +1,9 @@
+node_modules/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store
+# Personal configuration and data never belong in the repository.
+/config.json
+/arviro.config.json
+/data/
