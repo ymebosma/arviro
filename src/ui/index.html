@@ -16,6 +16,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="environment" role="tab">Environment</button>
     <button class="tab" data-tab="library" role="tab">Library</button>
+    <button class="tab" data-tab="chat" role="tab">Chat</button>
     <button class="tab" data-tab="connect" role="tab">Connect</button>
   </nav>
 
@@ -92,6 +93,25 @@
         </form>
         <p class="muted" id="catalogue-note"></p>
         <table id="catalogue"><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-chat" class="tabpane">
+      <div class="card chat">
+        <div class="row between">
+          <h2>Chat with your library</h2>
+          <span class="row">
+            <select id="chat-model"><option value="">loading models…</option></select>
+            <button id="chat-new" class="secondary" type="button">New chat</button>
+          </span>
+        </div>
+        <p class="muted" id="chat-note">The model runs in Ollama on this computer and uses the same two tools a chat app gets. Nothing leaves this computer.</p>
+        <div id="chat-messages"></div>
+        <form id="chat-form" class="row">
+          <textarea id="chat-input" rows="2" placeholder="Ask something about your library… (Enter sends, Shift+Enter is a new line)" class="grow"></textarea>
+          <button type="submit" id="chat-send">Send</button>
+          <button type="button" id="chat-stop" class="secondary hidden">Stop</button>
+        </form>
       </div>
     </section>
 

@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createArviro } from "./arviro.js";
 import { createCatalogue } from "./catalogue.js";
+import { createChat } from "./chat.js";
 import { ConfigError, expandHome, loadConfig } from "./config.js";
 import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDocumentSource, removeDownload, setDocumentSource, writeRawConfig } from "./configfile.js";
 import { createEmbedder } from "./embeddings.js";
@@ -98,9 +99,10 @@ export function listFolders(requested) {
  * @param {() => object} options.getArviro   the running application
  * @param {(next: object) => void} options.replace   swap in a new application after the configuration changed
  */
-export function createAdmin({ getArviro, replace, version, log = () => {}, fetchImpl = fetch, platform = process.platform }) {
+export function createAdmin({ getArviro, replace, guard, version, log = () => {}, fetchImpl = fetch, platform = process.platform }) {
   const jobs = createJobs(log);
   const config = () => getArviro().config;
+  const chat = createChat({ getArviro, guard, version, log, fetchImpl });
   // One catalogue per pair of catalogue URLs, so that its cache of Geofabrik's region list survives a reload.
   let catalogueCache = null;
   function catalogue() {
@@ -188,6 +190,15 @@ export function createAdmin({ getArviro, replace, version, log = () => {}, fetch
   async function api(method, route, query, body) {
     if (method === "GET" && route === "overview") return { status: 200, body: await overview() };
     if (method === "GET" && route === "jobs") return { status: 200, body: { job: jobs.current } };
+    if (method === "GET" && route === "chat/models") {
+      const current = config();
+      try {
+        const models = await chat.models();
+        return { status: 200, body: { models, default: current.chat.model || models[0] || null, url: current.chat.url || current.embedding.url } };
+      } catch (error) {
+        return { status: 200, body: { models: [], default: current.chat.model || null, url: current.chat.url || current.embedding.url, error: "Ollama is not reachable; see Environment." } };
+      }
+    }
     if (method === "GET" && route === "folders") return { status: 200, body: listFolders(query.get("path")) };
     if (method === "GET" && route === "catalogue") {
       const kind = query.get("kind") === "map" ? "map" : "zim";
@@ -233,7 +244,15 @@ export function createAdmin({ getArviro, replace, version, log = () => {}, fetch
     return { body: fs.readFileSync(path.join(UI_DIR, file)), type: CONTENT_TYPES[path.extname(file)] };
   }
 
-  return { api, staticFile, reload, jobs };
+  /** A streaming call: the chat. Returns an async iterator of events. */
+  function stream(route, body, signal) {
+    if (route !== "chat") throw new UserInputError("Unknown admin call.");
+    const input = body && typeof body === "object" ? body : {};
+    // Each turn is its own guard session: the repeat guard then catches loops within a turn, as it does per chat connection.
+    return chat.run({ messages: input.messages, model: input.model, signal, sessionKey: `chat:${Date.now()}:${Math.random()}` });
+  }
+
+  return { api, stream, staticFile, reload, jobs };
 }
 
 export { ConfigError };

@@ -56,7 +56,7 @@ export function startHttpServer(arviro, { guard, version, log = () => {}, admin:
     current = next;
     if (previous !== next) previous.close();
   };
-  const admin = settings.admin ? createAdmin({ getArviro: () => current, replace, version, log, ...adminOptions }) : null;
+  const admin = settings.admin ? createAdmin({ getArviro: () => current, replace, guard, version, log, ...adminOptions }) : null;
   // One HTTP connection is one guard session. Clients keep a connection open during a chat turn,
   // so a model that loops is slowed down without affecting other users.
   const connections = new WeakMap();
@@ -100,11 +100,35 @@ export function startHttpServer(arviro, { guard, version, log = () => {}, admin:
       return send(res, 405, { error: "Method not allowed." }, { allow: "GET, POST" });
     }
     try {
+      if (req.method === "POST" && route === "chat") return await streamAdmin(req, res, route, body);
       const result = await admin.api(req.method, route, url.searchParams, body);
       return send(res, result.status, result.body);
     } catch (error) {
       if (error instanceof UserInputError || error instanceof ConfigError) return send(res, 400, { error: error.message });
       throw error;
+    }
+  }
+
+  /** Events of a streaming admin call, one JSON object per line. A closed connection stops the work. */
+  async function streamAdmin(req, res, route, body) {
+    const controller = new AbortController();
+    res.on("close", () => controller.abort());
+    const events = admin.stream(route, body, controller.signal);
+    let started = false;
+    try {
+      for await (const event of events) {
+        if (!started) { res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no" }); started = true; }
+        res.write(`${JSON.stringify(event)}\n`);
+      }
+      if (!started) res.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" });
+      res.end(`${JSON.stringify({ type: "done" })}\n`);
+    } catch (error) {
+      if (controller.signal.aborted) return res.end();
+      const safe = error instanceof UserInputError || error instanceof ConfigError;
+      if (!safe) log(`chat failed: ${error.stack || error.message}`);
+      const message = safe ? error.message : `The chat failed: ${error.message}`;
+      if (!started) return send(res, safe ? 400 : 502, { error: message });
+      res.end(`${JSON.stringify({ type: "error", message })}\n`);
     }
   }
 

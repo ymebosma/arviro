@@ -235,14 +235,124 @@ async function showFolder(target) {
   if (!dialog.open) dialog.showModal();
 }
 
+// Chat
+const chat = { history: [], busy: false, controller: null, modelsLoaded: false };
+
+function addBubble(role, text = "") {
+  const node = el("div", { class: `msg ${role}`, text });
+  $("#chat-messages").append(node);
+  node.scrollIntoView({ block: "end" });
+  return node;
+}
+
+function addCall(name, args) {
+  const label = name === "search_library" ? `Searched ${args.source || "the library"}: "${args.query || ""}"${args.pathPrefix ? ` in ${args.pathPrefix}` : ""}`
+    : name === "read_document" ? `Read ${args.source || ""}: ${args.path || ""}${args.offset ? ` from ${args.offset}` : ""}` : `${name} ${JSON.stringify(args)}`;
+  const details = el("details", { class: "call" }, [el("summary", { text: label }), el("pre", { text: "…" })]);
+  $("#chat-messages").append(details);
+  details.scrollIntoView({ block: "end" });
+  return details;
+}
+
+async function loadModels() {
+  const select = $("#chat-model");
+  try {
+    const data = await api("chat/models");
+    const remembered = localStorage.getItem("arviro-chat-model");
+    select.replaceChildren(...(data.models.length ? data.models.map((name) => el("option", { value: name, text: name })) : [el("option", { value: "", text: "no chat model in Ollama" })]));
+    select.value = data.models.includes(remembered) ? remembered : data.default || data.models[0] || "";
+    $("#chat-note").textContent = data.error ? `${data.error} The chat needs Ollama at ${data.url}.`
+      : data.models.length ? "The model runs in Ollama on this computer and uses the same two tools a chat app gets. Nothing leaves this computer."
+        : `Ollama at ${data.url} has no chat model yet. Pull one that can call tools, for example: ollama pull qwen3:8b`;
+    chat.modelsLoaded = true;
+  } catch (error) {
+    $("#chat-note").textContent = error.message;
+  }
+}
+
+async function sendChat() {
+  const input = $("#chat-input");
+  const text = input.value.trim();
+  if (!text || chat.busy) return;
+  const model = $("#chat-model").value;
+  if (!model) return toast("Choose a model first.", true);
+  localStorage.setItem("arviro-chat-model", model);
+  input.value = "";
+  chat.history.push({ role: "user", content: text });
+  addBubble("user", text);
+  chat.busy = true;
+  chat.controller = new AbortController();
+  $("#chat-send").classList.add("hidden");
+  $("#chat-stop").classList.remove("hidden");
+  let bubble = addBubble("assistant");
+  let call = null;
+  try {
+    const headers = { "content-type": "application/json" };
+    if (state.token) headers.authorization = `Bearer ${state.token}`;
+    const response = await fetch("/admin/api/chat", { method: "POST", headers, body: JSON.stringify({ messages: chat.history, model }), signal: chat.controller.signal });
+    if (response.status === 401) { $("#token-panel").classList.remove("hidden"); throw new Error("Enter the server token first."); }
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `The server answered ${response.status}.`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    const handle = (event) => {
+      if (event.type === "token") { bubble.textContent += event.text; bubble.scrollIntoView({ block: "end" }); }
+      else if (event.type === "tool") { call = addCall(event.name, event.args); }
+      else if (event.type === "toolResult") { if (call) call.querySelector("pre").textContent = event.text; call = null; }
+      else if (event.type === "message") {
+        chat.history.push(event.message);
+        // A turn that only calls tools has no text; its bubble goes, and a new one follows the tool result.
+        if (event.message.role === "assistant" && !bubble.textContent) bubble.remove();
+        if (event.message.role === "tool") bubble = addBubble("assistant");
+      }
+      else if (event.type === "error") { addBubble("error", event.message); }
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffered += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newline).trim();
+        buffered = buffered.slice(newline + 1);
+        if (line) handle(JSON.parse(line));
+      }
+    }
+    if (!bubble.textContent) bubble.remove();
+  } catch (error) {
+    if (chat.controller.signal.aborted) { if (!bubble.textContent) bubble.textContent = "[stopped]"; }
+    else addBubble("error", error.message);
+  } finally {
+    chat.busy = false;
+    chat.controller = null;
+    $("#chat-send").classList.remove("hidden");
+    $("#chat-stop").classList.add("hidden");
+    input.focus();
+  }
+}
+
+function newChat() {
+  if (chat.busy) chat.controller?.abort();
+  chat.history = [];
+  $("#chat-messages").replaceChildren();
+}
+
 function init() {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => {
       for (const other of document.querySelectorAll(".tab")) other.classList.toggle("active", other === tab);
       for (const pane of document.querySelectorAll(".tabpane")) pane.classList.toggle("active", pane.id === `tab-${tab.dataset.tab}`);
       if (tab.dataset.tab === "library" && !$("#catalogue tbody").children.length) searchCatalogue();
+      if (tab.dataset.tab === "chat" && !chat.modelsLoaded) loadModels();
     });
   }
+  $("#chat-form").addEventListener("submit", (event) => { event.preventDefault(); sendChat(); });
+  $("#chat-input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendChat(); }
+  });
+  $("#chat-stop").addEventListener("click", () => chat.controller?.abort());
+  $("#chat-new").addEventListener("click", newChat);
+  $("#chat-model").addEventListener("change", () => localStorage.setItem("arviro-chat-model", $("#chat-model").value));
   $("#token-form").addEventListener("submit", (event) => {
     event.preventDefault();
     state.token = $("#token-input").value.trim();

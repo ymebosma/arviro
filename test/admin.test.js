@@ -19,11 +19,37 @@ const configPath = path.join(fixture.root, "admin-config.json");
 let server;
 let ollama;
 
-/** A stand-in for Ollama: /api/tags lists the models, /api/pull streams progress and then adds the model. */
+/**
+ * A stand-in for Ollama: /api/tags lists the models, /api/pull streams progress and then adds the model,
+ * and /api/chat answers a user message with a search_library call and a tool result with a sentence.
+ */
 function startFakeOllama() {
-  const models = [];
+  const models = ["chatty:latest"];
+  const chats = [];
   const node = http.createServer((req, res) => {
     if (req.url === "/api/tags") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ models: models.map((name) => ({ name })) })); }
+    if (req.url === "/api/chat") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        const request = JSON.parse(body);
+        chats.push(request);
+        if (request.model === "no-tools") { res.writeHead(400, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: "registry.ollama.ai/library/no-tools does not support tools" })); }
+        res.writeHead(200, { "content-type": "application/x-ndjson" });
+        const last = request.messages.at(-1);
+        const line = (message, done = false) => res.write(`${JSON.stringify({ model: request.model, message, done })}\n`);
+        if (last.role === "user") {
+          line({ role: "assistant", content: "", tool_calls: [{ function: { name: "search_library", arguments: { source: "library", query: last.content } } }] });
+          line({ role: "assistant", content: "" }, true);
+        } else {
+          line({ role: "assistant", content: "Based on the library: " });
+          line({ role: "assistant", content: `${last.content.slice(0, 40)}` });
+          line({ role: "assistant", content: "" }, true);
+        }
+        res.end();
+      });
+      return;
+    }
     if (req.url === "/api/pull") {
       let body = "";
       req.on("data", (chunk) => { body += chunk; });
@@ -41,7 +67,15 @@ function startFakeOllama() {
     }
     res.writeHead(404); res.end();
   });
-  return { node, models, start: () => new Promise((resolve) => node.listen(0, "127.0.0.1", resolve)), url: () => `http://127.0.0.1:${node.address().port}` };
+  return { node, models, chats, start: () => new Promise((resolve) => node.listen(0, "127.0.0.1", resolve)), url: () => `http://127.0.0.1:${node.address().port}` };
+}
+
+/** Send a chat turn and collect the streamed events. */
+async function chatTurn(base, body, headers = {}) {
+  const response = await fetch(`${base}/admin/api/chat`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const text = await response.text();
+  const events = response.headers.get("content-type")?.includes("ndjson") ? text.trim().split("\n").map((line) => JSON.parse(line)) : [JSON.parse(text)];
+  return { status: response.status, events };
 }
 
 function writeConfig(extra = {}) {
@@ -298,6 +332,63 @@ test("Ollama is checked and a missing model can be pulled from the page", async 
   } finally {
     await other.close();
   }
+  writeConfig();
+});
+
+test("the chat answers with the library tools through Ollama", async () => {
+  fs.writeFileSync(path.join(fixture.root, "prompt.md"), "You are the test assistant.\n");
+  const other = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", systemPrompt: path.join(fixture.root, "prompt.md") } });
+  try {
+    const models = await api("chat/models", { base: other.url });
+    assert.deepEqual(models.body.models, ["chatty:latest"], "embedding models are left out");
+    assert.equal(models.body.default, "chatty:latest");
+
+    ollama.chats.length = 0;
+    const { status, events } = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }] });
+    assert.equal(status, 200);
+    const types = events.map((event) => event.type);
+    assert.deepEqual(types, ["message", "tool", "toolResult", "message", "token", "token", "message", "done"], JSON.stringify(events));
+    const tool = events.find((event) => event.type === "tool");
+    assert.deepEqual(tool, { type: "tool", name: "search_library", args: { source: "library", query: "How long should I cool a burn?" } });
+    const result = events.find((event) => event.type === "toolResult");
+    assert.match(result.text, /manuals\/first-aid\.md/);
+    assert.match(result.text, /lukewarm running water/);
+    const answer = events.filter((event) => event.type === "token").map((event) => event.text).join("");
+    assert.match(answer, /^Based on the library: /);
+    const history = events.filter((event) => event.type === "message").map((event) => event.message);
+    assert.equal(history[0].tool_calls[0].function.name, "search_library");
+    assert.equal(history[1].role, "tool");
+    assert.equal(history[1].tool_name, "search_library");
+    assert.equal(history[2].content, answer);
+
+    // What Ollama was sent: the system prompt from the file, the tools with their MCP descriptions, and the tool result.
+    assert.equal(ollama.chats.length, 2);
+    assert.equal(ollama.chats[0].messages[0].role, "system");
+    assert.equal(ollama.chats[0].messages[0].content, "You are the test assistant.");
+    assert.deepEqual(ollama.chats[0].tools.map((tool) => tool.function.name), ["search_library", "read_document"]);
+    assert.deepEqual(ollama.chats[0].tools[0].function.parameters.properties.source.enum, ["library", "wiki", "wikipedia", "wikivoyage", "maps"]);
+    assert.equal(ollama.chats[0].options.num_ctx, 16_384);
+    assert.equal(ollama.chats[1].messages.at(-1).role, "tool");
+    assert.match(ollama.chats[1].messages.at(-1).content, /first-aid/);
+
+    // The next turn carries the history the page kept.
+    const second = await chatTurn(other.url, { messages: [...history.slice(0, 0), { role: "user", content: "How long should I cool a burn?" }, ...history, { role: "user", content: "And bleeding?" }] });
+    assert.equal(second.status, 200);
+    assert.equal(ollama.chats.at(-2).messages.length, 6, "system, user, assistant, tool, assistant, user");
+
+    const noTools = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "no-tools" });
+    assert.equal(noTools.status, 400);
+    assert.match(noTools.events[0].error, /cannot call tools/);
+    const wrongOrder = await chatTurn(other.url, { messages: [{ role: "assistant", content: "x" }] });
+    assert.equal(wrongOrder.status, 400);
+    assert.match(wrongOrder.events[0].error, /last message must be from the user/);
+  } finally {
+    await other.close();
+  }
+  const noOllama = await chatTurn(server.url, { messages: [{ role: "user", content: "hi" }], model: "chatty:latest" });
+  assert.equal(noOllama.status, 400);
+  assert.match(noOllama.events[0].error, /needs Ollama/);
+  assert.equal((await api("chat/models")).body.models.length, 0);
   writeConfig();
 });
 

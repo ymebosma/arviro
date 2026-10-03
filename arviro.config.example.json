@@ -43,6 +43,10 @@
     "model": "qwen3-embedding:0.6b",
     "dimensions": 512
   },
+  "chat": {
+    "model": "",
+    "systemPrompt": ""
+  },
   "server": {
     "host": "127.0.0.1",
     "port": 8765,

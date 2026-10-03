@@ -8,7 +8,7 @@ Arviro is a small [MCP](https://modelcontextprotocol.io) server that lets a loca
 
 Everything runs on your own computer. Arviro only reads; it cannot change your files, and the server does not use the internet. The only exception is `arviro library update`, a command for you that downloads new editions of ZIM files and map extracts.
 
-It is made for chat apps that speak MCP, such as [Open WebUI](https://openwebui.com) with a model served by [Ollama](https://ollama.com).
+It is made for chat apps that speak MCP, such as [Open WebUI](https://openwebui.com) with a model served by [Ollama](https://ollama.com). It also has a chat page of its own, so that Ollama and Arviro are all you need.
 
 ## What the model gets
 
@@ -79,6 +79,7 @@ node bin/arviro.js read library manuals/water.md
 
 - **Environment**: the checks of `arviro doctor`, with the command to install what is missing on your platform. The page itself can pull the embedding model through Ollama and build the index.
 - **Library**: your document folders (with a folder browser), the download list with what is on disk and how old it is, buttons to check for updates and to update, and a search in the Kiwix catalogue and Geofabrik's region list to add encyclopedias and maps. A few common choices are shown before you search.
+- **Chat**: a conversation with a model from Ollama that uses the library, so Arviro works without any other chat app. The model gets the same two tools and the same system prompt (`examples/system-prompt.en.md`) a chat app would; each search and read is shown in the conversation, with its result. Choose a model that can call tools, such as `qwen3` or `llama3.1`.
 - **Connect**: the URLs and tokens a chat app needs, and the steps for Open WebUI.
 
 Changes are written to the configuration file (relative to `~` where possible) and take effect at once; only `server.*` settings need a restart. Jobs such as an index build run one at a time in the server, with their log on the page. The MCP endpoints do not change: `/admin/` is not a tool, and the model cannot reach it.
@@ -174,6 +175,10 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `search.minSemanticScore` | How similar a passage must be when none of the question's words occur in it. Default 0.76, tuned for `qwen3-embedding`. |
 | `search.queryExpansions` | List of `[pattern, terms]`: when the pattern matches the question, the terms are added. The default list maps common Dutch emergency and medical words to English. |
 | `read.maxChars` | Size of one part returned by `read_document`. Default 12000 characters. |
+| `chat.model` | The model for the Chat tab; by default the first chat model Ollama has. |
+| `chat.url` | Ollama for the chat, when it is not the one of `embedding.url`. |
+| `chat.systemPrompt` | A file with the system prompt. Default `examples/system-prompt.en.md`; `examples/system-prompt.nl.md` is the Dutch one. |
+| `chat.numCtx`, `.maxRounds` | Context size for the chat (default 16384) and how often the model may call tools in one turn (default 6). |
 | `guard.windowMs`, `.maxCallsPerWindow`, `.maxCallsTotal` | Loop protection: at most 20 calls per 60 seconds for one connection, and 120 for all connections together. |
 | `tools.pdftotext`, `.kiwixServe`, `.osmium` | Paths of the helper programs, when they are not found automatically. |
 
@@ -254,12 +259,11 @@ npm test
 
 The tests build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext, so none of those need to be installed.
 
-Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js` and `src/ui/` are the admin page.
+Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js`, `src/chat.js` and `src/ui/` are the admin page.
 
 ## Not there yet
 
 - Map search only knows places and amenities that OpenStreetMap stores as a point. A hospital or shop drawn as a building outline is not found yet.
-- A chat page of its own, so that Arviro can be used without Open WebUI.
 - Packaged installers for macOS, Windows and Linux, and a client for phones.
 - Pages to view articles and maps in a browser, so answers can link to them.
 - A tool for the assistant's own notes and tasks.

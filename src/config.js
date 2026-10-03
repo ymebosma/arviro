@@ -271,8 +271,23 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     catch (error) { throw new ConfigError(`search.queryExpansions[${index}] is not a valid regular expression: ${error.message}`); }
   });
 
+  const chatInput = asObject(input.chat, "chat");
+  const chat = {
+    // The model for the chat tab; empty means "the first chat model Ollama has".
+    model: String(chatInput.model || ""),
+    // Ollama for the chat; by default the one of embedding.url.
+    url: chatInput.url ? String(chatInput.url).replace(/\/+$/, "") : null,
+    // A file with the system prompt; the default is examples/system-prompt.en.md in the package.
+    systemPrompt: chatInput.systemPrompt ? resolvePath(chatInput.systemPrompt, baseDir) : null,
+    numCtx: Number(chatInput.numCtx ?? 16_384),
+    maxRounds: Number(chatInput.maxRounds ?? 6),
+  };
+  if (!Number.isInteger(chat.numCtx) || chat.numCtx < 1024) throw new ConfigError("chat.numCtx must be a whole number of at least 1024.");
+  if (!Number.isInteger(chat.maxRounds) || chat.maxRounds < 1 || chat.maxRounds > 20) throw new ConfigError("chat.maxRounds must be a whole number from 1 to 20.");
+
   const guardInput = asObject(input.guard, "guard");
   return {
+    chat,
     configPath,
     missing: false,
     dataDir,
