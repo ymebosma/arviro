@@ -153,26 +153,32 @@ export function startFakeDownloads() {
     url: "",
   };
 
-  remote.catalogFeed = (base) => `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:dc="http://purl.org/dc/terms/">
-  <id>12345678-90ab-cdef-1234-567890abcdef</id>
-  <entry>
-    <id>urn:uuid:aaaa</id>
+  // As the real catalogue lists books: the name without the flavour, the flavour apart, and the flavour in the file name.
+  const entry = (flavour, file, length) => `  <entry>
+    <id>urn:uuid:${flavour}</id>
     <title>Wikipedia</title>
     <updated>2026-09-15T00:00:00Z</updated>
-    <summary>Dutch Wikipedia &amp; more</summary>
+    <summary>Dutch Wikipedia &amp; more (${flavour})</summary>
     <language>nld</language>
-    <name>wikipedia_nl_all_nopic</name>
-    <flavour>nopic</flavour>
+    <name>wikipedia_nl_all</name>
+    <flavour>${flavour}</flavour>
     <category>wikipedia</category>
-    <link rel="http://opds-spec.org/image/thumbnail" href="/catalog/v2/illustration/aaaa/?size=48" type="image/png;width=48;height=48;scale=1"/>
-    <link type="text/html" href="/content/${NEW_WIKIPEDIA}" />
-    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="${base}/zim/wikipedia/${NEW_WIKIPEDIA}.zim.meta4" length="${ZIM_BYTES.length}" />
+    <link rel="http://opds-spec.org/image/thumbnail" href="/catalog/v2/illustration/${flavour}/?size=48" type="image/png;width=48;height=48;scale=1"/>
+    <link type="text/html" href="/content/${file}" />
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="${remote.base}/zim/wikipedia/${file}.zim.meta4" length="${length}" />
     <author><name>Wikipedia</name></author>
     <publisher><name>Kiwix</name></publisher>
     <dc:issued>2026-09-15T00:00:00Z</dc:issued>
-  </entry>
+  </entry>`;
+  remote.catalogFeed = (base) => {
+    remote.base = base;
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:dc="http://purl.org/dc/terms/">
+  <id>12345678-90ab-cdef-1234-567890abcdef</id>
+${entry("maxi", "wikipedia_nl_all_maxi_2026-09", 5_000_000_000)}
+${entry("nopic", NEW_WIKIPEDIA, ZIM_BYTES.length)}
 </feed>`;
+  };
 
   remote.meta4 = (base) => `<?xml version="1.0" encoding="UTF-8"?>
 <metalink xmlns="urn:ietf:params:xml:ns:metalink">
@@ -215,9 +221,10 @@ export function startFakeDownloads() {
       remote.requests.push(`${req.method} ${url.pathname}${url.search}${req.headers.range ? ` range=${req.headers.range}` : ""}`);
       const text = (status, body, type = "text/plain") => { res.writeHead(status, { "content-type": type }); res.end(body); };
       if (url.pathname === "/catalog/v2/entries") {
+        // Like the real catalogue: the name filter matches the name without the flavour, and nothing else.
         const name = url.searchParams.get("name");
         const query = (url.searchParams.get("q") || "").toLowerCase();
-        if ((name && name !== "wikipedia_nl_all_nopic") || (query && !"wikipedia dutch".includes(query))) return text(200, '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>', "application/atom+xml");
+        if ((name && name !== "wikipedia_nl_all") || (query && !"wikipedia dutch".includes(query))) return text(200, '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>', "application/atom+xml");
         return text(200, remote.catalogFeed(remote.url), "application/atom+xml");
       }
       if (url.pathname === "/geofabrik/index-v1-nogeom.json") return text(200, geofabrikIndex(), "application/json");

@@ -59,27 +59,35 @@ export function xmlElements(xml, name) {
 
 const firstText = (xml, name) => decodeEntities(xmlElements(xml, name)[0]?.body ?? "").trim() || null;
 
+/** The ZIM file an OPDS entry links to: { file, url, meta4Url, bytes }, or null. */
+export function acquisitionOf(entryXml, base = "https://library.kiwix.org/") {
+  const link = xmlElements(entryXml, "link").map((item) => item.attributes).find((candidate) => candidate.rel === ACQUISITION_REL || candidate.type === "application/x-zim");
+  if (!link?.href) return null;
+  let url;
+  let file;
+  try {
+    const href = new URL(link.href, base).href;
+    url = href.endsWith(".meta4") ? href.slice(0, -6) : href;
+    file = decodeURIComponent(new URL(url).pathname.split("/").at(-1));
+  } catch { return null; }
+  // The file name decides where a download is written, so it must be a plain ZIM name.
+  if (!ZIM_FILE.test(file)) return null;
+  return { file, url, meta4Url: `${url}.meta4`, bytes: Number(link.length) > 0 ? Number(link.length) : null };
+}
+
 /**
  * The latest edition of a book in a Kiwix OPDS catalogue feed (`/catalog/v2/entries?name=...`).
+ * A book is identified by the series of its file name ("wikipedia_nl_all_nopic"): the catalogue's own
+ * `<name>` leaves the flavour out ("wikipedia_nl_all", with `<flavour>nopic</flavour>`).
  * Returns { file, bytes, url, meta4Url, updated } or null when the book is not in the feed.
  */
 export function parseCatalog(xml, name, base = "https://library.kiwix.org/") {
-  const entries = xmlElements(xml, "entry").map((entry) => ({
-    names: xmlElements(entry.body, "name").map((element) => decodeEntities(element.body).trim()),
-    links: xmlElements(entry.body, "link").map((link) => link.attributes),
-    updated: firstText(entry.body, "updated"),
-  }));
-  const entry = entries.find((candidate) => candidate.names.includes(name)) || (entries.length === 1 ? entries[0] : null);
-  if (!entry) return null;
-  const link = entry.links.find((candidate) => candidate.rel === ACQUISITION_REL || candidate.type === "application/x-zim");
-  if (!link?.href) return null;
-  const href = new URL(link.href, base).href;
-  const url = href.endsWith(".meta4") ? href.slice(0, -6) : href;
-  let file;
-  try { file = decodeURIComponent(new URL(url).pathname.split("/").at(-1)); } catch { return null; }
-  // The file name decides where the download is written, so it must be a plain ZIM name of the requested series.
-  if (!ZIM_FILE.test(file) || zimSeries(file) !== name) return null;
-  return { file, bytes: Number(link.length) > 0 ? Number(link.length) : null, url, meta4Url: `${url}.meta4`, updated: entry.updated };
+  for (const entry of xmlElements(xml, "entry")) {
+    const acquisition = acquisitionOf(entry.body, base);
+    if (!acquisition || zimSeries(acquisition.file) !== name) continue;
+    return { ...acquisition, updated: firstText(entry.body, "updated") };
+  }
+  return null;
 }
 
 /** The size, hashes and mirror URLs of a Metalink 4 (.meta4) file. The strongest hash comes first. */
@@ -242,12 +250,19 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     return expected;
   }
 
-  /** Where the latest edition of a ZIM book is, according to the Kiwix catalogue. */
+  /**
+   * Where the latest edition of a ZIM book is, according to the Kiwix catalogue.
+   * The catalogue is asked by the full name first, then by the name without its last part (the flavour),
+   * since "wikipedia_nl_all_nopic" is listed under the name "wikipedia_nl_all".
+   */
   async function remoteZim(item) {
-    const url = `${settings.kiwixCatalog}/entries?name=${encodeURIComponent(item.name)}&count=50`;
-    const remote = parseCatalog(await fetchSmall(url, "application/atom+xml, application/xml, text/xml"), item.name, url);
-    if (!remote) throw new Error(`"${item.name}" is not in the Kiwix catalogue (${settings.kiwixCatalog})`);
-    return remote;
+    const shorter = item.name.replace(/_[^_]+$/, "");
+    for (const candidate of shorter === item.name ? [item.name] : [item.name, shorter]) {
+      const url = `${settings.kiwixCatalog}/entries?name=${encodeURIComponent(candidate)}&count=50`;
+      const remote = parseCatalog(await fetchSmall(url, "application/atom+xml, application/xml, text/xml"), item.name, url);
+      if (remote) return remote;
+    }
+    throw new Error(`"${item.name}" is not in the Kiwix catalogue (${settings.kiwixCatalog})`);
   }
 
   async function remoteMap(item) {

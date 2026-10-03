@@ -50,6 +50,9 @@ test("xmlElements, parseCatalog, parseMeta4 and parseChecksumFile read the downl
   assert.equal(parseCatalog(traversal, "wikipedia_nl_all_nopic"), null);
   const otherSeries = catalogFeed("https://download.example").replace(`${NEW_WIKIPEDIA}.zim.meta4`, "wikipedia_de_all_maxi_2026-09.zim.meta4");
   assert.equal(parseCatalog(otherSeries, "wikipedia_nl_all_nopic"), null);
+  // The feed lists the book under the name without its flavour; the file name of the right flavour decides.
+  assert.equal(parseCatalog(catalogFeed("https://download.example"), "wikipedia_nl_all_maxi").file, "wikipedia_nl_all_maxi_2026-09.zim");
+  assert.equal(parseCatalog(catalogFeed("https://download.example"), "wikipedia_nl_all"), null);
 
   const link = parseMeta4(meta4("https://download.example"));
   assert.equal(link.size, ZIM_BYTES.length);
@@ -135,6 +138,9 @@ test("check reports newer editions without downloading anything", async () => {
   assert.ok(remote.requests.includes("HEAD /europe/testland-latest.osm.pbf"));
   assert.match(formatLibraryRows(rows), /NEWER: wikipedia_nl_all_nopic_2026-09\.zim \(293 kB\)/);
 
+  // The catalogue was asked by the full name first and then by the name without the flavour.
+  assert.ok(remote.requests.includes("GET /catalog/v2/entries?name=wikipedia_nl_all_nopic&count=50"), remote.requests.join("\n"));
+  assert.ok(remote.requests.includes("GET /catalog/v2/entries?name=wikipedia_nl_all&count=50"), remote.requests.join("\n"));
   const unknownName = await createLibrary(makeConfig({ downloads: [{ zim: "nothing_here" }], kiwixCatalog: `${remote.url}/catalog/v2` }), quiet).check();
   assert.equal(unknownName[0].verdict, "error");
   assert.match(unknownName[0].error, /not in the Kiwix catalogue/);

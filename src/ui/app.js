@@ -2,7 +2,7 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
-const state = { overview: null, token: sessionStorage.getItem("arviro-token") || "", polling: null, folder: null };
+const state = { overview: null, token: sessionStorage.getItem("arviro-token") || "", polling: null, folder: null, lastCheck: null };
 
 function el(tag, attributes = {}, children = []) {
   const node = document.createElement(tag);
@@ -90,16 +90,33 @@ function renderSources(sources) {
   $("#sources tbody").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { class: "muted", text: "No document folders yet." }))]));
 }
 
+/** What the last "Check for updates" said about one item, as a short line. */
+function verdictOf(check) {
+  if (!check) return null;
+  const remote = check.remote ? `${check.remote.file}${check.remote.bytes ? ` (${bytes(check.remote.bytes)})` : ""}${check.kind === "map" && check.remote.modifiedAt ? ` dated ${day(check.remote.modifiedAt)}` : ""}` : "";
+  if (check.verdict === "newer") return { text: `NEWER: ${remote}`, bad: true };
+  if (check.verdict === "missing") return { text: `AVAILABLE: ${remote}`, bad: true };
+  if (check.verdict === "current") return { text: "up to date", bad: false };
+  if (check.verdict === "unknown") return { text: "cannot tell whether a newer version exists", bad: false };
+  if (check.verdict === "error") return { text: `ERROR: ${check.error}`, bad: true };
+  return null;
+}
+
 function renderDownloads(overview) {
   const managed = new Set(overview.downloads.map((item) => `${item.kind}:${item.id}`));
   const rows = overview.library.map((row) => {
     const facts = row.exists
       ? [row.file, bytes(row.bytes), `${row.kind === "zim" ? "edition" : "dated"} ${row.edition || "?"}`, age(row.ageDays), row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : "checksum unknown"]
       : ["not downloaded yet"];
+    const verdict = verdictOf(state.lastCheck?.[`${row.kind}:${row.id}`]);
     return el("tr", {}, [
       el("td", { class: `state ${row.exists ? "ok" : "bad"}`, text: row.exists ? "✓" : "–" }),
       el("td", { class: "label" }, [el("b", { text: row.id }), el("span", { class: "muted", text: ` ${row.kind}` })]),
-      el("td", {}, [el("div", { text: facts.join("  ·  ") }), row.managed ? "" : el("div", { class: "muted", text: "not in the download list; it stays as it is" })]),
+      el("td", {}, [
+        el("div", { text: facts.join("  ·  ") }),
+        row.managed ? "" : el("div", { class: "muted", text: "not in the download list; it stays as it is" }),
+        verdict ? el("div", { class: verdict.bad ? "bad" : "ok", text: verdict.text }) : "",
+      ]),
       el("td", {}, managed.has(`${row.kind}:${row.id}`) ? el("button", { class: "secondary small", type: "button", onclick: () => removeDownload(row.id) }, "Remove") : ""),
     ]);
   });
@@ -147,7 +164,13 @@ async function pollJob() {
   try {
     const { job } = await api("jobs");
     renderJob(job);
-    if (job && job.status !== "running") { toast(job.status === "done" ? `${job.name}: done.` : `${job.name} failed.`, job.status !== "done"); await refresh(); }
+    if (job && job.status !== "running") {
+      // The outcome of a check is shown in the download table; an update makes an earlier check stale.
+      if (job.name === "library check" && Array.isArray(job.result)) state.lastCheck = Object.fromEntries(job.result.map((row) => [`${row.kind}:${row.id}`, row]));
+      else if (job.name === "library update") state.lastCheck = null;
+      toast(job.status === "done" ? `${job.name}: done.` : `${job.name} failed.`, job.status !== "done");
+      await refresh();
+    }
   } catch (error) {
     toast(error.message, true);
   }
@@ -157,6 +180,7 @@ async function startJob(body) {
   try {
     const { job } = await api("jobs", { method: "POST", body });
     renderJob(job);
+    $("#job-panel").scrollIntoView({ block: "nearest" });
   } catch (error) {
     toast(error.message, true);
   }
@@ -214,11 +238,12 @@ async function searchCatalogue() {
     el("td", {}, [el("div", { text: note })]),
     el("td", {}, present.has(id) ? el("span", { class: "muted", text: "in the list" }) : el("button", { class: "small", type: "button", onclick: () => change("downloads", body) }, "Add")),
   ]));
-  if (!query.trim()) for (const item of data.curated) addRow(item.title, item.kind === "zim" ? `${item.name} · ${item.note}` : item.url, item.kind === "zim" ? item.name : item.id, item.kind === "zim" ? { zim: item.name } : { map: item.id, url: item.url });
+  const searched = Boolean(query.trim() || (kind === "zim" && lang));
+  if (!searched) for (const item of data.curated) addRow(item.title, item.kind === "zim" ? `${item.name} · ${item.note}` : item.url, item.kind === "zim" ? item.name : item.id, item.kind === "zim" ? { zim: item.name } : { map: item.id, url: item.url });
   if (kind === "zim") for (const book of data.results) addRow(book.title || book.name, [book.name, book.language, book.flavour, book.edition, bytes(book.bytes), book.summary].filter(Boolean).join(" · "), book.name, { zim: book.name });
   else for (const region of data.results) addRow(region.name, `${region.id} · ${region.url}`, region.suggestedId, { map: region.suggestedId, url: region.url });
   $("#catalogue tbody").replaceChildren(...rows);
-  $("#catalogue-note").textContent = data.error ? data.error : rows.length ? (query.trim() ? `${data.results.length} found.` : "A few common choices; search for more.") : "Nothing found.";
+  $("#catalogue-note").textContent = data.error ? data.error : !searched ? "A few common choices; search the catalogue for more." : rows.length ? `${data.results.length} found.` : "Nothing found.";
 }
 
 // Folder browser

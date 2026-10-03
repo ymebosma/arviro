@@ -220,20 +220,27 @@ test("downloads are added from the catalogues and removed again", async () => {
 });
 
 test("the catalogue offers curated entries and search results", async () => {
-  const zim = await api("catalogue?kind=zim");
-  assert.equal(zim.status, 200);
-  assert.ok(zim.body.curated.every((item) => item.kind === "zim"));
-  assert.equal(zim.body.results[0].name, "wikipedia_nl_all_nopic");
-  assert.equal(zim.body.results[0].edition, "2026-09");
-  assert.equal(zim.body.results[0].bytes, remote.ZIM_BYTES.length);
+  const curatedOnly = await api("catalogue?kind=zim");
+  assert.equal(curatedOnly.status, 200);
+  assert.ok(curatedOnly.body.curated.every((item) => item.kind === "zim"));
+  assert.deepEqual(curatedOnly.body.results, [], "without a search only the curated choices are shown");
+  const zim = await api("catalogue?kind=zim&query=wikipedia");
+  // The name to add is the series of the file, flavour included; the catalogue's own <name> leaves it out.
+  assert.deepEqual(zim.body.results.map((book) => book.name), ["wikipedia_nl_all_maxi", "wikipedia_nl_all_nopic"]);
+  const nopic = zim.body.results[1];
+  assert.equal(nopic.edition, "2026-09");
+  assert.equal(nopic.bytes, remote.ZIM_BYTES.length);
+  assert.equal(nopic.summary, "Dutch Wikipedia & more (nopic)", "entities are decoded");
   assert.deepEqual((await api("catalogue?kind=zim&query=zzz")).body.results, []);
+  assert.deepEqual((await api("catalogue?kind=map")).body.results, []);
   const maps = await api("catalogue?kind=map&query=test");
   assert.deepEqual(maps.body.results.map((region) => [region.id, region.suggestedId]), [["europe/testland", "testland"]]);
-  assert.equal((await api("catalogue?kind=map")).body.results.length, 2, "a region without a pbf URL is left out");
+  assert.equal((await api("catalogue?kind=map&query=europe")).body.results.length, 2, "a region without a pbf URL is left out");
 
   const feed = parseCatalogueFeed(remote.catalogFeed("https://download.example"));
   assert.equal(feed[0].title, "Wikipedia");
   assert.equal(feed[0].language, "nld");
+  assert.equal(feed[0].flavour, "maxi");
   assert.equal(regionIdFor("europe/great-britain"), "great-britain");
   assert.deepEqual(parseGeofabrikIndex({ features: [{ properties: { id: "a", urls: { pbf: "u" } } }, { properties: {} }] }), [{ id: "a", name: "a", parent: null, url: "u" }]);
   assert.ok(CURATED.some((item) => item.kind === "map" && item.id === "nl"));

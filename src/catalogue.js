@@ -1,5 +1,7 @@
 // What can be added to the library: a short curated list, the Kiwix catalogue, and Geofabrik's region index.
-import { xmlElements } from "./library.js";
+import { zimSeries } from "./config.js";
+import { acquisitionOf, xmlElements } from "./library.js";
+import { decodeEntities } from "./text.js";
 
 const MAX_RESPONSE = 8 * 1024 * 1024;
 const CACHE_MS = 60 * 60 * 1000;
@@ -22,24 +24,27 @@ export const CURATED = Object.freeze([
   { kind: "map", id: "gb", title: "Great Britain", url: "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf" },
 ]);
 
-const text = (xml, name) => xmlElements(xml, name)[0]?.body.trim() || null;
+const text = (xml, name) => decodeEntities(xmlElements(xml, name)[0]?.body ?? "").trim() || null;
 
-/** Books in a Kiwix OPDS feed: { name, title, summary, language, flavour, bytes, edition }. */
-export function parseCatalogueFeed(xml) {
+/**
+ * Books in a Kiwix OPDS feed: { name, title, summary, language, flavour, bytes, edition }.
+ * `name` is the series of the file ("wikipedia_nl_all_nopic"), which is what library.downloads needs;
+ * the catalogue's own `<name>` leaves the flavour out.
+ */
+export function parseCatalogueFeed(xml, base = "https://library.kiwix.org/") {
   return xmlElements(xml, "entry").map((entry) => {
-    const link = xmlElements(entry.body, "link").map((item) => item.attributes).find((attributes) => attributes.type === "application/x-zim" || String(attributes.rel || "").endsWith("acquisition/open-access"));
-    const href = link?.href || "";
-    const name = xmlElements(entry.body, "name").map((item) => item.body.trim()).find((value) => /^[a-z0-9][a-z0-9._-]*$/i.test(value)) || null;
+    const acquisition = acquisitionOf(entry.body, base);
+    if (!acquisition) return null;
     return {
-      name,
+      name: zimSeries(acquisition.file),
       title: text(entry.body, "title"),
       summary: text(entry.body, "summary"),
       language: text(entry.body, "language"),
       flavour: text(entry.body, "flavour"),
-      bytes: Number(link?.length) > 0 ? Number(link.length) : null,
-      edition: href.match(/_(\d{4}-\d{2}(?:-\d{2})?)\.zim/)?.[1] || null,
+      bytes: acquisition.bytes,
+      edition: acquisition.file.match(/_(\d{4}-\d{2}(?:-\d{2})?)\.zim$/)?.[1] || null,
     };
-  }).filter((book) => book.name);
+  }).filter(Boolean);
 }
 
 /** Regions of Geofabrik's index: { id, name, parent, url }. */
@@ -80,7 +85,7 @@ export function createCatalogue({ kiwixCatalog, geofabrikIndex, fetchImpl = fetc
     url.searchParams.set("count", "50");
     if (query.trim()) url.searchParams.set("q", query.trim().slice(0, 100));
     if (lang.trim()) url.searchParams.set("lang", lang.trim().slice(0, 10));
-    return parseCatalogueFeed(await fetchBounded(fetchImpl, url.href, "application/atom+xml, application/xml, text/xml"));
+    return parseCatalogueFeed(await fetchBounded(fetchImpl, url.href, "application/atom+xml, application/xml, text/xml"), url.href);
   }
 
   async function regions() {

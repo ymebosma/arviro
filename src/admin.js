@@ -12,7 +12,7 @@ import { ConfigError, expandHome, loadConfig } from "./config.js";
 import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDocumentSource, removeDownload, setDocumentSource, writeRawConfig } from "./configfile.js";
 import { createEmbedder } from "./embeddings.js";
 import { buildIndex } from "./indexer.js";
-import { createLibrary } from "./library.js";
+import { createLibrary, formatBytes } from "./library.js";
 import { checkEnvironment } from "./setup.js";
 import { UserInputError } from "./text.js";
 
@@ -166,7 +166,16 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
     const current = config();
     const nameList = Array.isArray(names) ? names.map(String).slice(0, 50) : [];
     if (job === "index") return jobs.start("index", (line) => buildIndex(current, createEmbedder(current.embedding), { log: line }));
-    if (job === "library-check") return jobs.start("library check", (line) => createLibrary(current, { log: line }).check(nameList));
+    if (job === "library-check") {
+      return jobs.start("library check", async (line) => {
+        const rows = await createLibrary(current, { log: line }).check(nameList);
+        for (const row of rows) {
+          const remote = row.remote ? `${row.remote.file}${row.remote.bytes ? ` (${formatBytes(row.remote.bytes)})` : ""}` : "";
+          line(`${row.id}: ${row.verdict === "newer" ? `newer edition ${remote}` : row.verdict === "missing" ? `available: ${remote}` : row.verdict === "error" ? `error: ${row.error}` : row.verdict}`);
+        }
+        return rows;
+      });
+    }
     if (job === "library-update") {
       return jobs.start("library update", async (line) => {
         const summary = await createLibrary(current, { log: line }).update(nameList, { force: Boolean(force) });
@@ -203,10 +212,12 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
     if (method === "GET" && route === "catalogue") {
       const kind = query.get("kind") === "map" ? "map" : "zim";
       const curated = catalogue().curated.filter((item) => item.kind === kind);
+      const search = (query.get("query") || "").trim();
+      const lang = (query.get("lang") || "").trim();
+      // Without a search, only the curated choices are shown; the whole catalogue is too much to browse.
+      if (!search && !lang) return { status: 200, body: { kind, curated, results: [] } };
       try {
-        const results = kind === "zim"
-          ? await catalogue().searchZim({ query: query.get("query") || "", lang: query.get("lang") || "" })
-          : await catalogue().searchMaps({ query: query.get("query") || "" });
+        const results = kind === "zim" ? await catalogue().searchZim({ query: search, lang }) : await catalogue().searchMaps({ query: search });
         return { status: 200, body: { kind, curated, results } };
       } catch (error) {
         log(`catalogue: ${error.message}`);

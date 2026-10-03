@@ -26,12 +26,18 @@ export function readRawConfig(configPath) {
   }
 }
 
+/** The indentation a JSON file uses (two spaces when it cannot be told). */
+function indentationOf(configPath) {
+  try { return fs.readFileSync(configPath, "utf8").match(/^(\t+| {2,8})"/m)?.[1] || "  "; }
+  catch { return "  "; }
+}
+
 /** Write the configuration atomically, after checking that it is valid. Returns the normalized configuration. */
 export function writeRawConfig(configPath, raw) {
   const config = normalizeConfig(raw, { configPath });
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   const temporary = `${configPath}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(raw, null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(temporary, `${JSON.stringify(raw, null, indentationOf(configPath))}\n`, { mode: 0o600 });
   fs.renameSync(temporary, configPath);
   return config;
 }
