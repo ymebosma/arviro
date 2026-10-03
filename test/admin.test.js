@@ -40,6 +40,8 @@ function startFakeOllama() {
         const line = (message, done = false) => res.write(`${JSON.stringify({ model: request.model, message, done })}\n`);
         // A "slow" model thinks forever: the connection stays open until the client gives up.
         if (request.model === "slow") return line({ role: "assistant", content: "", thinking: "Hmm" });
+        // A "looping" model thinks until num_predict cuts it off, without any answer.
+        if (request.model === "looping") { line({ role: "assistant", content: "", thinking: "Wait, should I? No. Wait, should I? No." }); res.write(`${JSON.stringify({ model: request.model, message: { role: "assistant", content: "" }, done: true, done_reason: "length" })}\n`); return res.end(); }
         if (last.role === "user") {
           line({ role: "assistant", content: "", thinking: "The user asks about " });
           line({ role: "assistant", content: "", thinking: "the library; I should search." });
@@ -150,6 +152,7 @@ test("the page, the redirect and the health endpoint", async () => {
   assert.match(await page.text(), /<title>Arviro<\/title>/);
   assert.equal((await fetch(`${server.url}/admin/app.js`)).status, 200);
   assert.equal((await fetch(`${server.url}/admin/style.css`)).status, 200);
+  assert.equal((await fetch(`${server.url}/admin/markdown.js`)).status, 200);
   assert.equal((await fetch(`${server.url}/admin/../package.json`)).status, 404);
   assert.equal((await fetch(`${server.url}/admin/nope.html`)).status, 404);
   const root = await fetch(`${server.url}/`, { redirect: "manual" });
@@ -417,6 +420,11 @@ test("a model that thinks for too long is cut off, and thinking can be switched 
     assert.equal(quick.status, 200);
     assert.equal(ollama.chats[0].think, false);
     assert.equal(ollama.chats[0].options.num_predict, 1024);
+    const looping = await chatTurn(other.url, { messages: [{ role: "user", content: "think hard" }], model: "looping" });
+    assert.equal(looping.status, 200);
+    const note = looping.events.find((event) => event.type === "token");
+    assert.match(note.text, /used up its room on thinking/);
+    assert.match(looping.events.find((event) => event.type === "message").message.content, /set chat\.think to false/);
     const slow = await chatTurn(other.url, { messages: [{ role: "user", content: "think hard" }], model: "slow" });
     assert.equal(slow.status, 200, "the stream had started");
     const last = slow.events.at(-1);

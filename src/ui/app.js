@@ -1,5 +1,5 @@
 // The admin page. Talks to /admin/api/ (see src/admin.js); no framework, no external files.
-"use strict";
+import { parseMarkdown } from "./markdown.js";
 
 const $ = (selector) => document.querySelector(selector);
 const state = { overview: null, token: sessionStorage.getItem("arviro-token") || "", polling: null, folder: null, lastCheck: null };
@@ -270,6 +270,30 @@ function addBubble(role, text = "") {
   return node;
 }
 
+/** DOM nodes for the tree of parseMarkdown; the model's text only ever becomes text nodes. */
+function renderInline(parts) {
+  return parts.map((part) => {
+    if (typeof part === "string") return document.createTextNode(part);
+    if (part.type === "br") return el("br");
+    return el(part.type, {}, renderInline(part.children));
+  });
+}
+
+function renderMarkdown(text) {
+  return parseMarkdown(text).map((block) => {
+    if (block.type === "pre") return el("pre", { text: block.children[0] });
+    if (block.type === "h") return el(`h${Math.min(block.level + 2, 6)}`, {}, renderInline(block.children));
+    if (block.type === "ul" || block.type === "ol") return el(block.type, {}, block.items.map((item) => el("li", {}, renderInline(item))));
+    return el("p", {}, renderInline(block.children));
+  });
+}
+
+/** An assistant bubble shows its text as Markdown; the raw text is kept on the node. */
+function setAnswer(bubble, text) {
+  bubble.dataset.raw = text;
+  bubble.replaceChildren(...renderMarkdown(text));
+}
+
 function addCall(name, args) {
   const label = name === "search_library" ? `Searched ${args.source || "the library"}: "${args.query || ""}"${args.pathPrefix ? ` in ${args.pathPrefix}` : ""}`
     : name === "read_document" ? `Read ${args.source || ""}: ${args.path || ""}${args.offset ? ` from ${args.offset}` : ""}` : `${name} ${JSON.stringify(args)}`;
@@ -338,7 +362,7 @@ async function sendChat() {
     let buffered = "";
     const handle = (event) => {
       if (event.type === "thinking") { think(event.text); }
-      else if (event.type === "token") { doneThinking(); bubble.textContent += event.text; bubble.scrollIntoView({ block: "end" }); }
+      else if (event.type === "token") { doneThinking(); setAnswer(bubble, (bubble.dataset.raw || "") + event.text); bubble.scrollIntoView({ block: "end" }); }
       else if (event.type === "tool") { doneThinking(); call = addCall(event.name, event.args); }
       else if (event.type === "toolResult") { if (call) call.querySelector("pre").textContent = event.text; call = null; }
       else if (event.type === "message") {

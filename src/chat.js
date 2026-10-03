@@ -128,10 +128,12 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
           throw new Error(`Ollama answered ${response.status}: ${detail}`);
         }
         let content = "";
+        let doneReason = null;
         const toolCalls = [];
         try {
           for await (const chunk of ndjson(response.body)) {
             if (chunk.error) throw new Error(String(chunk.error));
+            if (chunk.done) doneReason = chunk.done_reason || null;
             const message = chunk.message || {};
             // A thinking model streams its reasoning apart from the answer; the page shows it dimmed, so a long think does not look like a hang.
             if (message.thinking) yield { type: "thinking", text: String(message.thinking) };
@@ -142,6 +144,14 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         } catch (error) {
           if (timeout.aborted && !signal?.aborted) throw new UserInputError(`The model did not finish within ${config.chat.timeoutSeconds} seconds. Try a smaller model or a shorter question, or raise chat.timeoutSeconds.`);
           throw error;
+        }
+        // The model ran out of room (chat.numPredict): say so, instead of ending the turn with silence.
+        if (doneReason === "length" && !toolCalls.length) {
+          const note = content.trim()
+            ? "\n\n[The answer was cut off at chat.numPredict tokens.]"
+            : "[The model used up its room on thinking and gave no answer. Try again, or set chat.think to false.]";
+          content += note;
+          yield { type: "token", text: note };
         }
         const assistant = { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
         history.push(assistant);

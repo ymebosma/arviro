@@ -17,7 +17,7 @@ import { checkEnvironment } from "./setup.js";
 import { UserInputError } from "./text.js";
 
 const UI_DIR = fileURLToPath(new URL("./ui/", import.meta.url));
-const STATIC = { "": "index.html", "index.html": "index.html", "app.js": "app.js", "style.css": "style.css" };
+const STATIC = { "": "index.html", "index.html": "index.html", "app.js": "app.js", "markdown.js": "markdown.js", "style.css": "style.css" };
 const CONTENT_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 const MAX_LOG_LINES = 400;
 const MAX_FOLDERS = 500;
