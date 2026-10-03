@@ -6,7 +6,7 @@ Arviro is a small [MCP](https://modelcontextprotocol.io) server that lets a loca
 - **Kiwix ZIM files** such as an offline Wikipedia or Wikivoyage;
 - **OpenStreetMap extracts**, for questions about places and what is near them.
 
-Everything runs on your own computer. Arviro only reads; it cannot change your files, and it does not use the internet.
+Everything runs on your own computer. Arviro only reads; it cannot change your files, and the server does not use the internet. The only exception is `arviro library update`, a command for you that downloads new editions of ZIM files and map extracts.
 
 It is made for chat apps that speak MCP, such as [Open WebUI](https://openwebui.com) with a model served by [Ollama](https://ollama.com).
 
@@ -56,6 +56,8 @@ node bin/arviro.js doctor     # checks the configuration and the helper programs
 node bin/arviro.js index      # builds the search index; run it again after adding documents
 node bin/arviro.js serve      # starts the server on http://127.0.0.1:8765
 ```
+
+`node bin/arviro.js library update` downloads the ZIM files and map extracts listed in the configuration; see [Keeping the library up to date](#keeping-the-library-up-to-date).
 
 `npm link` makes the `arviro` command available everywhere, so you can type `arviro serve`.
 
@@ -142,6 +144,10 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `kiwix.private` | List of ZIM source ids to treat as private, for example `["wikipedia"]`. |
 | `maps.regions` | OpenStreetMap extracts (`.osm.pbf`) by region name. Together they form the source `maps`. |
 | `maps.description`, `maps.private` | Description of the map source for the model, and `true` to make it private. |
+| `library.downloads` | What `arviro library update` keeps up to date: `{ "zim": "<name>" }` for a book from the Kiwix catalogue, `{ "map": "<region>", "url": "<extract>" }` for a region of `maps.regions`. See [Keeping the library up to date](#keeping-the-library-up-to-date). |
+| `library.indexAfterUpdate` | Run the index after a download. Default `true`. |
+| `library.keepOldEditions` | Keep earlier editions of a ZIM file after a newer one is downloaded. Default `false`: they are deleted. |
+| `library.kiwixCatalog` | The Kiwix catalogue to ask for the latest editions. Default `https://library.kiwix.org/catalog/v2`. |
 | `embedding.provider` | `ollama` (default) or `none` for full-text search only. |
 | `embedding.url`, `.model`, `.dimensions` | Default `http://127.0.0.1:11434`, `qwen3-embedding:0.6b`, 512. After changing the model or the dimensions, run `arviro index`: it rebuilds the index. Until then, search uses words only and says so. |
 | `server.host`, `.port` | Default `127.0.0.1` and 8765. |
@@ -168,6 +174,43 @@ Run `arviro index` after adding or changing documents. It only processes what ch
 
 If a source folder cannot be read during a run, for example because a disk is not connected, its documents stay in the index.
 
+### Keeping the library up to date
+
+`arviro library` downloads ZIM files and map extracts, checks their checksums and tells you what is in the library and how old it is. It only touches what is listed under `library.downloads` in the configuration; this is the only part of Arviro that writes to the library, and it is a command for you, not a tool for the model.
+
+```json
+"library": {
+  "downloads": [
+    { "zim": "wikipedia_nl_all_nopic" },
+    { "zim": "wikivoyage_nl_all_maxi" },
+    { "map": "nl", "url": "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf" }
+  ]
+}
+```
+
+- A `zim` entry is the name of a book as the [Kiwix library](https://library.kiwix.org) lists it, without the edition date. Its latest edition is looked up in the Kiwix catalogue and saved in `kiwix.zimDir`; the SHA-256 checksum from the download's metalink file is checked. Earlier editions of the same book are deleted afterwards, unless `library.keepOldEditions` is `true`.
+- A `map` entry names a region of `maps.regions` and the URL of its extract, for example from [Geofabrik](https://download.geofabrik.de). The file is saved at the region's path. The checksum is read from `<url>.md5`, as Geofabrik publishes it; set `"checksum"` to another URL (`.md5`, `.sha1` or `.sha256`) for other servers, or to `false` to download without a check.
+
+The commands:
+
+```bash
+arviro library status             # what is there, how big it is, how old it is, and when it was last verified
+arviro library check              # asks the servers whether newer editions exist; downloads nothing
+arviro library update             # downloads what is missing or newer, checks the checksums, then runs the index
+arviro library update nl --force  # downloads one item again, even when it is up to date
+arviro library verify             # recomputes the checksums of the files on disk
+```
+
+`status` also lists ZIM files and map regions that are not in `library.downloads`, so you see everything that is there. A download goes to a `.part` file next to its destination and is only put in place when it is complete and its checksum matches; an interrupted download continues where it stopped the next time. What was downloaded, with its checksum, is kept in `library.json` in `dataDir`.
+
+After a download, `update` runs `arviro index` (switch that off with `--no-index` or `library.indexAfterUpdate`). A running `arviro serve` picks up the new index by itself, but it lists ZIM files when it starts: restart it after a new ZIM edition has arrived.
+
+To run the update on a schedule, use [`examples/launchd.library.plist`](examples/launchd.library.plist) on macOS (weekly, Sunday at 04:00) or a cron line on Linux:
+
+```
+0 4 * * 0  /usr/bin/node /path/to/arviro/bin/arviro.js library update >> ~/.local/share/arviro/library.log 2>&1
+```
+
 ## Run it as a service on macOS
 
 [`examples/launchd.plist`](examples/launchd.plist) is a LaunchAgent that starts Arviro at login and restarts it when it stops. Replace the paths in it, copy it to `~/Library/LaunchAgents/local.arviro.plist` and load it:
@@ -193,12 +236,11 @@ npm test
 
 The tests build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext, so none of those need to be installed.
 
-Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/mcp.js` and `src/http.js` expose it over MCP.
+Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP.
 
 ## Not there yet
 
 - Map search only knows places and amenities that OpenStreetMap stores as a point. A hospital or shop drawn as a building outline is not found yet.
-- Downloading and updating library content (ZIM files, map extracts).
 - Pages to view articles and maps in a browser, so answers can link to them.
 - A tool for the assistant's own notes and tasks.
 

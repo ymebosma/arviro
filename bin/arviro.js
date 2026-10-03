@@ -8,11 +8,12 @@ import { createEmbedder } from "../src/embeddings.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
 import { buildIndex } from "../src/indexer.js";
+import { createLibrary, formatLibraryRows, formatUpdate, formatVerify } from "../src/library.js";
 import { createMcpServer } from "../src/mcp.js";
 import { UserInputError } from "../src/text.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-const FLAGS = new Set(["public", "full", "help", "version"]);
+const FLAGS = new Set(["public", "full", "force", "no-index", "help", "version"]);
 const USAGE = `Arviro ${VERSION}: search and read your offline library through MCP.
 
 Usage: arviro <command> [options]
@@ -24,6 +25,11 @@ Usage: arviro <command> [options]
   read <source> <path> [offset] [limit]     read a search result further
   status                     show sources and index contents
   doctor                     check the installation
+  library status             show the ZIM files and map extracts in the library and how old they are
+  library check [name...]    ask the download servers whether newer editions exist
+  library update [name...]   download new or newer editions, check their checksums and update the index
+                             [--force: download again] [--no-index: skip the index run]
+  library verify [name...]   check the checksums of the files in the library
 
 Options:
   --config <file>            configuration file (default: $ARVIRO_CONFIG or ~/.config/arviro/config.json)
@@ -144,6 +150,34 @@ async function doctor(config) {
   return problems.length ? 1 : 0;
 }
 
+/** Library management: `arviro library <status|check|update|verify> [name...]`. Returns the exit code. */
+async function library(config, rest, options) {
+  const [action = "status", ...names] = rest;
+  const manager = createLibrary(config, { log });
+  if (action === "status") { print(formatLibraryRows(manager.status())); return 0; }
+  if (action === "check") {
+    const rows = await manager.check(names);
+    print(formatLibraryRows(rows));
+    return rows.some((row) => row.verdict === "error") ? 1 : 0;
+  }
+  if (action === "verify") {
+    const rows = await manager.verify(names);
+    print(formatVerify(rows));
+    return rows.some((row) => row.status === "mismatch") ? 1 : 0;
+  }
+  if (action === "update") {
+    const summary = await manager.update(names, { force: Boolean(options.force) });
+    print(formatUpdate(summary));
+    if (summary.downloaded && config.library.indexAfterUpdate && !options["no-index"]) {
+      log("updating the search index");
+      print(await buildIndex(config, createEmbedder(config.embedding), { log }));
+      if (summary.items.some((row) => row.action === "downloaded" && row.kind === "zim")) log("note: restart `arviro serve` so that it serves the new ZIM edition");
+    }
+    return summary.failed ? 1 : 0;
+  }
+  throw new UserInputError(`Unknown library command "${action}". Use: library status, check, update or verify.`);
+}
+
 async function main() {
   const { options, positional } = parseArguments(process.argv.slice(2));
   const [command, ...rest] = positional;
@@ -155,6 +189,7 @@ async function main() {
   if (command === "serve") return serve(config);
   if (command === "stdio") return stdio(config, options);
   if (command === "doctor") { process.exitCode = await doctor(config); return; }
+  if (command === "library") { process.exitCode = await library(config, rest, options); return; }
   if (command === "index") {
     const summary = await buildIndex(config, createEmbedder(config.embedding), { log, full: Boolean(options.full) });
     return print(summary);
