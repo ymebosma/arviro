@@ -163,6 +163,9 @@ test("update downloads new editions, verifies checksums, removes old editions an
   assert.ok(!fs.existsSync(path.join(fixture.zimDir, `${NEW_WIKIPEDIA}.zim.part`)));
   assert.equal(map.action, "downloaded");
   assert.equal(fs.readFileSync(path.join(fixture.root, "maps/test.osm.pbf"), "utf8"), "map extract, version one");
+  // Permissions: a replaced file keeps its mode, a new edition follows the edition before it, a first download is 0600.
+  assert.equal(fs.statSync(path.join(fixture.root, "maps/test.osm.pbf")).mode & 0o777, 0o644);
+  assert.equal(fs.statSync(path.join(fixture.zimDir, `${NEW_WIKIPEDIA}.zim`)).mode & 0o777, 0o644);
 
   const state = JSON.parse(fs.readFileSync(config.library.stateFile, "utf8"));
   assert.equal(state.items["zim:wikipedia_nl_all_nopic"].checksum, `sha256:${sha256(ZIM_BYTES)}`);
@@ -180,12 +183,14 @@ test("update downloads new editions, verifies checksums, removes old editions an
   assert.equal(rows[0].verifiedAt, "2026-10-03T12:00:00.000Z");
   assert.equal(rows[1].edition, "2026-04-01");
 
-  // A new map build on the server is noticed by its checksum, and replaces the file.
+  // A new map build on the server is noticed by its checksum, and replaces the file, keeping its permissions.
   remote.map = { bytes: Buffer.from("map extract, version two"), modified: "Thu, 01 Oct 2026 06:00:00 GMT" };
+  fs.chmodSync(path.join(fixture.root, "maps/test.osm.pbf"), 0o600);
   assert.equal((await library.check(["test"]))[0].verdict, "newer");
   const third = await library.update(["test"]);
   assert.equal(third.items[0].action, "downloaded");
   assert.equal(fs.readFileSync(path.join(fixture.root, "maps/test.osm.pbf"), "utf8"), "map extract, version two");
+  assert.equal(fs.statSync(path.join(fixture.root, "maps/test.osm.pbf")).mode & 0o777, 0o600);
   assert.equal(library.status()[1].edition, "2026-10-01");
 });
 

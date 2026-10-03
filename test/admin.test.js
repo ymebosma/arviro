@@ -275,6 +275,9 @@ test("jobs run one at a time: the index, a library check and a library update", 
   assert.equal(updated.status, "done", updated.error);
   assert.equal(updated.result.downloaded, 1);
   assert.ok(updated.lines.some((line) => /downloaded wikipedia_nl_all_nopic_2026-09\.zim/.test(line)), updated.lines.join("\n"));
+  assert.ok(updated.lines.some((line) => /1 downloaded, 0 failed/.test(line)), updated.lines.join("\n"));
+  assert.ok(updated.lines.at(-1).includes("index updated"), updated.lines.join("\n"));
+  assert.match(updated.lines[0], /^\d\d:\d\d:\d\d /);
   assert.ok(fs.existsSync(path.join(fixture.zimDir, `${remote.NEW_WIKIPEDIA}.zim`)));
   assert.ok(!fs.existsSync(path.join(fixture.zimDir, `${WIKIPEDIA_BOOK}.zim`)), "the old edition is removed");
   assert.ok((await api("overview")).body.sources.find((source) => source.id === "wikipedia").books.includes(remote.NEW_WIKIPEDIA), "the server now serves the new edition");

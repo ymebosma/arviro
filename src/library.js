@@ -314,9 +314,12 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
    * Download one URL (trying the next one when a download fails) to `target`, resuming a `.part` file when there is one.
    * The hash is computed while downloading; the file is only put in place when it matches `expected`.
    */
-  async function downloadFile({ id, urls, target, expected, bytes }) {
+  async function downloadFile({ id, urls, target, expected, bytes, modeLike = target }) {
     const part = `${target}.part`;
     fs.mkdirSync(path.dirname(target), { recursive: true });
+    // The new file gets the permissions of the file it replaces or follows; a first download is private to the owner.
+    let mode = 0o600;
+    try { mode = fs.statSync(modeLike).mode & 0o777; } catch {}
     let lastError = null;
     let mismatches = 0;
     for (const url of urls) {
@@ -328,6 +331,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
             mismatches += 1;
             throw new ChecksumError(`the ${expected.algorithm} checksum of the download does not match; the file was discarded`);
           }
+          fs.chmodSync(part, mode);
           fs.renameSync(part, target);
           return result;
         } catch (error) {
@@ -413,7 +417,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     }
     const target = path.join(config.kiwix.zimDir, remote.file);
     log(`${item.id}: downloading ${remote.file}${remote.bytes ? ` (${formatBytes(remote.bytes)})` : ""}`);
-    const result = await downloadFile({ id: item.id, urls: [remote.url, ...mirrors.filter((url) => url !== remote.url)], target, expected, bytes: remote.bytes });
+    const result = await downloadFile({ id: item.id, urls: [remote.url, ...mirrors.filter((url) => url !== remote.url)], target, expected, bytes: remote.bytes, modeLike: editionsOf(item.name)[0] || target });
     const removed = [];
     if (!settings.keepOldEditions) {
       for (const file of editionsOf(item.name)) {

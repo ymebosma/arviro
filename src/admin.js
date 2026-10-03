@@ -22,6 +22,9 @@ const CONTENT_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javasc
 const MAX_LOG_LINES = 400;
 const MAX_FOLDERS = 500;
 
+/** The time of day as the owner's clock shows it, for the job log. */
+const localTime = () => new Date().toLocaleTimeString("en-GB", { hour12: false });
+
 /** One job at a time; the page polls its state. */
 function createJobs(log) {
   let current = null;
@@ -31,7 +34,7 @@ function createJobs(log) {
     if (current?.status === "running") throw new UserInputError(`"${current.name}" is still running; wait for it to finish.`);
     const job = { id: counter += 1, name, status: "running", startedAt: new Date().toISOString(), finishedAt: null, lines: [], result: null, error: null };
     const line = (message) => {
-      job.lines.push(`${new Date().toISOString().slice(11, 19)} ${message}`);
+      job.lines.push(`${localTime()} ${message}`);
       if (job.lines.length > MAX_LOG_LINES) job.lines.splice(0, job.lines.length - MAX_LOG_LINES);
       log(`${name}: ${message}`);
     };
@@ -165,7 +168,13 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
   function startJob({ job, names = [], force = false }) {
     const current = config();
     const nameList = Array.isArray(names) ? names.map(String).slice(0, 50) : [];
-    if (job === "index") return jobs.start("index", (line) => buildIndex(current, createEmbedder(current.embedding), { log: line }));
+    if (job === "index") {
+      return jobs.start("index", async (line) => {
+        const summary = await buildIndex(current, createEmbedder(current.embedding), { log: line });
+        line(`index updated: ${summary.documents.indexed} documents indexed, ${summary.documents.unchanged} unchanged, ${summary.documents.removed} removed`);
+        return summary;
+      });
+    }
     if (job === "library-check") {
       return jobs.start("library check", async (line) => {
         const rows = await createLibrary(current, { log: line }).check(nameList);
@@ -180,9 +189,11 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
       return jobs.start("library update", async (line) => {
         const summary = await createLibrary(current, { log: line }).update(nameList, { force: Boolean(force) });
         for (const row of summary.items) line(`${row.id}: ${row.action}${row.file ? ` ${row.file}` : ""}${row.error ? ` (${row.error})` : ""}`);
+        line(`${summary.downloaded} downloaded, ${summary.failed} failed`);
         if (summary.downloaded && current.library.indexAfterUpdate) {
           line("updating the search index");
           summary.index = await buildIndex(current, createEmbedder(current.embedding), { log: line });
+          line(`index updated: ${summary.index.documents.indexed} documents indexed, ${summary.index.maps.filter((map) => map.indexed).map((map) => `map ${map.region} ${map.objects} objects`).join(", ") || "maps unchanged"}`);
         }
         if (summary.downloaded) reload();
         return summary;
