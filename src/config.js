@@ -175,6 +175,7 @@ function libraryConfig(input, { zimDir, regions, dataDir }) {
   return {
     downloads,
     kiwixCatalog: String(input.kiwixCatalog || "https://library.kiwix.org/catalog/v2").replace(/\/+$/, ""),
+    geofabrikIndex: String(input.geofabrikIndex || "https://download.geofabrik.de/index-v1-nogeom.json"),
     indexAfterUpdate: input.indexAfterUpdate !== false,
     keepOldEditions: input.keepOldEditions === true,
     stateFile: path.join(dataDir, "library.json"),
@@ -250,6 +251,8 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     publicToken: serverInput.publicToken ? String(serverInput.publicToken) : null,
     allowedHosts: (serverInput.allowedHosts || []).map(String),
     allowedOrigins: (serverInput.allowedOrigins || []).map(String),
+    // The admin page on /admin/; switch it off for a server that only serves MCP.
+    admin: serverInput.admin !== false,
   };
   if (!Number.isInteger(server.port) || server.port < 0 || server.port > 65535) throw new ConfigError("server.port must be a port number.");
 
@@ -271,6 +274,7 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
   const guardInput = asObject(input.guard, "guard");
   return {
     configPath,
+    missing: false,
     dataDir,
     indexPath: path.join(dataDir, "index.sqlite"),
     sources,
@@ -300,12 +304,19 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
   };
 }
 
-/** Read the config file given explicitly, by $ARVIRO_CONFIG, or at the default location. */
-export function loadConfig(explicitPath = null) {
+/**
+ * Read the config file given explicitly, by $ARVIRO_CONFIG, or at the default location.
+ * With `allowMissing`, a file that does not exist gives the default configuration, marked `missing`,
+ * so that the server can start and the admin page can create the file.
+ */
+export function loadConfig(explicitPath = null, { allowMissing = false } = {}) {
   const configPath = path.resolve(expandHome(explicitPath || process.env.ARVIRO_CONFIG || DEFAULT_CONFIG_PATH));
   let text;
   try { text = fs.readFileSync(configPath, "utf8"); }
-  catch { throw new ConfigError(`No configuration file at ${configPath}. Copy arviro.config.example.json there and edit it, or pass --config <file>.`); }
+  catch {
+    if (allowMissing) return { ...normalizeConfig({}, { configPath }), missing: true };
+    throw new ConfigError(`No configuration file at ${configPath}. Copy arviro.config.example.json there and edit it, pass --config <file>, or start "arviro serve" and open its admin page.`);
+  }
   let raw;
   try { raw = JSON.parse(text); }
   catch (error) { throw new ConfigError(`${configPath} is not valid JSON: ${error.message}`); }

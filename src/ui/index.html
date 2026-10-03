@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arviro</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Arviro <span id="version" class="muted"></span></h1>
+    <p class="muted" id="config-line">Loading…</p>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="environment" role="tab">Environment</button>
+    <button class="tab" data-tab="library" role="tab">Library</button>
+    <button class="tab" data-tab="connect" role="tab">Connect</button>
+  </nav>
+
+  <section id="token-panel" class="card hidden">
+    <h2>Token</h2>
+    <p>This server has a token (<code>server.authToken</code>). Enter it to use the admin page.</p>
+    <form id="token-form" class="row">
+      <input type="password" id="token-input" placeholder="token" autocomplete="off">
+      <button type="submit">Use token</button>
+    </form>
+  </section>
+
+  <main>
+    <section id="tab-environment" class="tabpane active">
+      <div class="card">
+        <div class="row between">
+          <h2>What is installed</h2>
+          <button id="recheck" class="secondary">Check again</button>
+        </div>
+        <p class="muted">Green is fine. For a red line, the advice says what to do; some things the page can do for you.</p>
+        <table id="checks"><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-library" class="tabpane">
+      <div class="card">
+        <h2>Document folders</h2>
+        <p class="muted">Folders with your own PDF, Markdown, text, HTML, CSV or JSON files. A private folder is only served on <code>/mcp</code>, not on <code>/public/mcp</code>.</p>
+        <table id="sources"><tbody></tbody></table>
+        <form id="source-form" class="stack">
+          <div class="row">
+            <input type="text" id="source-path" placeholder="/path/to/folder or ~/Documents/Library" required>
+            <button type="button" id="browse" class="secondary">Browse…</button>
+          </div>
+          <div class="row">
+            <input type="text" id="source-id" placeholder="id, e.g. library" pattern="[a-z][a-z0-9_\-]{0,30}" required>
+            <input type="text" id="source-description" placeholder="One sentence for the model: what is in this folder?" class="grow">
+          </div>
+          <div class="row">
+            <label><input type="checkbox" id="source-private"> private</label>
+            <button type="submit">Add folder</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <h2>Downloads</h2>
+          <span class="row">
+            <button id="library-check" class="secondary">Check for updates</button>
+            <button id="library-update">Update now</button>
+          </span>
+        </div>
+        <p class="muted" id="download-dirs"></p>
+        <table id="downloads"><tbody></tbody></table>
+      </div>
+
+      <div class="card">
+        <h2>Add from the catalogues</h2>
+        <form id="catalogue-form" class="row">
+          <select id="catalogue-kind">
+            <option value="zim">Encyclopedias and books (Kiwix)</option>
+            <option value="map">Maps (Geofabrik)</option>
+          </select>
+          <input type="text" id="catalogue-query" placeholder="search" class="grow">
+          <select id="catalogue-lang">
+            <option value="">any language</option>
+            <option value="nld">Dutch</option>
+            <option value="eng">English</option>
+            <option value="deu">German</option>
+            <option value="fra">French</option>
+          </select>
+          <button type="submit" class="secondary">Search</button>
+        </form>
+        <p class="muted" id="catalogue-note"></p>
+        <table id="catalogue"><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section id="tab-connect" class="tabpane">
+      <div class="card">
+        <h2>Connect a chat app</h2>
+        <p>Arviro is an MCP server. Any chat app that speaks MCP over Streamable HTTP can use it, for example <a href="https://openwebui.com" rel="noreferrer">Open WebUI</a> with a model from <a href="https://ollama.com" rel="noreferrer">Ollama</a>.</p>
+        <table id="connect"><tbody></tbody></table>
+        <h3>Open WebUI</h3>
+        <ol>
+          <li>As admin, open <b>Settings → Integrations → External Tool Servers</b> and press <b>+</b>.</li>
+          <li>Type <b>MCP (Streamable HTTP)</b>, URL as in the table above, ID <code>arviro</code>; with a token, Auth <b>Bearer</b>.</li>
+          <li>In a chat, switch the tool on with the integrations button, or tick it in a model under <b>Workspace → Models</b>.</li>
+        </ol>
+        <h3>Clients that start the server themselves</h3>
+        <pre id="stdio-snippet"></pre>
+      </div>
+    </section>
+  </main>
+
+  <section id="job-panel" class="card hidden">
+    <div class="row between">
+      <h2 id="job-title">Job</h2>
+      <span id="job-status" class="pill"></span>
+    </div>
+    <pre id="job-log"></pre>
+  </section>
+
+  <dialog id="folder-dialog">
+    <div class="row between">
+      <h2>Choose a folder</h2>
+      <button type="button" id="folder-close" class="secondary">Close</button>
+    </div>
+    <p class="row">
+      <button type="button" id="folder-up" class="secondary">Up</button>
+      <button type="button" id="folder-home" class="secondary">Home</button>
+      <code id="folder-current" class="grow"></code>
+      <button type="button" id="folder-use">Use this folder</button>
+    </p>
+    <ul id="folder-list"></ul>
+  </dialog>
+
+  <p id="toast" class="toast hidden"></p>
+  <script src="app.js"></script>
+</body>
+</html>

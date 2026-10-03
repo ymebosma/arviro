@@ -2,106 +2,23 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import http from "node:http";
 import path from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ConfigError, normalizeConfig } from "../src/config.js";
 import { createLibrary, formatAge, formatBytes, formatLibraryRows, formatUpdate, formatVerify, parseCatalog, parseChecksumFile, parseMeta4, xmlElements, zimEdition } from "../src/library.js";
-import { fixtureConfig, makeFixture, WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK } from "./helpers.js";
+import { fixtureConfig, makeFixture, startFakeDownloads, WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK } from "./helpers.js";
 
 const fixture = makeFixture();
 const cli = fileURLToPath(new URL("../bin/arviro.js", import.meta.url));
-const NEW_WIKIPEDIA = "wikipedia_nl_all_nopic_2026-09";
-const ZIM_BYTES = crypto.randomBytes(300_000);
+const remote = startFakeDownloads();
+const { NEW_WIKIPEDIA, ZIM_BYTES, catalogFeed, meta4 } = remote;
 const sha256 = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
 const md5 = (buffer) => crypto.createHash("md5").update(buffer).digest("hex");
 
-/** A stand-in for library.kiwix.org, download.kiwix.org and download.geofabrik.de. */
-const remote = {
-  map: { bytes: Buffer.from("map extract, version one"), modified: "Wed, 01 Apr 2026 06:00:00 GMT" },
-  canonicalFails: false,
-  requests: [],
-  server: null,
-  url: "",
-};
-
-function catalogFeed(base) {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:dc="http://purl.org/dc/terms/">
-  <id>12345678-90ab-cdef-1234-567890abcdef</id>
-  <entry>
-    <id>urn:uuid:aaaa</id>
-    <title>Wikipedia</title>
-    <updated>2026-09-15T00:00:00Z</updated>
-    <summary>Dutch Wikipedia &amp; more</summary>
-    <language>nld</language>
-    <name>wikipedia_nl_all_nopic</name>
-    <flavour>nopic</flavour>
-    <category>wikipedia</category>
-    <link rel="http://opds-spec.org/image/thumbnail" href="/catalog/v2/illustration/aaaa/?size=48" type="image/png;width=48;height=48;scale=1"/>
-    <link type="text/html" href="/content/${NEW_WIKIPEDIA}" />
-    <link rel="http://opds-spec.org/acquisition/open-access" type="application/x-zim" href="${base}/zim/wikipedia/${NEW_WIKIPEDIA}.zim.meta4" length="${ZIM_BYTES.length}" />
-    <author><name>Wikipedia</name></author>
-    <publisher><name>Kiwix</name></publisher>
-    <dc:issued>2026-09-15T00:00:00Z</dc:issued>
-  </entry>
-</feed>`;
-}
-
-function meta4(base) {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<metalink xmlns="urn:ietf:params:xml:ns:metalink">
-  <generator>MirrorBrain/2.19.0</generator>
-  <origin dynamic="true">${base}/zim/wikipedia/${NEW_WIKIPEDIA}.zim.meta4</origin>
-  <file name="${NEW_WIKIPEDIA}.zim">
-    <size>${ZIM_BYTES.length}</size>
-    <hash type="md5">${md5(ZIM_BYTES)}</hash>
-    <hash type="sha-1">${crypto.createHash("sha1").update(ZIM_BYTES).digest("hex")}</hash>
-    <hash type="sha-256">${sha256(ZIM_BYTES)}</hash>
-    <url location="nl" priority="1">${base}/mirror/${NEW_WIKIPEDIA}.zim</url>
-    <url location="de" priority="2">${base}/zim/wikipedia/${NEW_WIKIPEDIA}.zim</url>
-  </file>
-</metalink>`;
-}
-
-function sendBytes(req, res, buffer, extraHeaders = {}) {
-  const range = remote.ignoreRange ? null : req.headers.range?.match(/^bytes=(\d+)-$/);
-  const start = range ? Number(range[1]) : 0;
-  if (start > 0 && start >= buffer.length) { res.writeHead(416, { "content-range": `bytes */${buffer.length}` }); return res.end(); }
-  const body = buffer.subarray(start);
-  res.writeHead(start ? 206 : 200, {
-    "content-type": "application/octet-stream",
-    "content-length": body.length,
-    ...(start ? { "content-range": `bytes ${start}-${buffer.length - 1}/${buffer.length}` } : {}),
-    ...extraHeaders,
-  });
-  if (req.method === "HEAD") return res.end();
-  res.end(body);
-}
-
-before(async () => {
-  remote.server = http.createServer((req, res) => {
-    const url = new URL(req.url, "http://localhost");
-    remote.requests.push(`${req.method} ${url.pathname}${url.search}${req.headers.range ? ` range=${req.headers.range}` : ""}`);
-    const text = (status, body, type = "text/plain") => { res.writeHead(status, { "content-type": type }); res.end(body); };
-    if (url.pathname === "/catalog/v2/entries") {
-      if (url.searchParams.get("name") !== "wikipedia_nl_all_nopic") return text(200, '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>', "application/atom+xml");
-      return text(200, catalogFeed(remote.url), "application/atom+xml");
-    }
-    if (url.pathname === `/zim/wikipedia/${NEW_WIKIPEDIA}.zim.meta4`) return text(200, meta4(remote.url), "application/metalink4+xml");
-    if (url.pathname === `/zim/wikipedia/${NEW_WIKIPEDIA}.zim`) return remote.canonicalFails ? text(503, "busy") : sendBytes(req, res, ZIM_BYTES);
-    if (url.pathname === `/mirror/${NEW_WIKIPEDIA}.zim`) return sendBytes(req, res, ZIM_BYTES);
-    if (url.pathname === "/europe/testland-latest.osm.pbf") return sendBytes(req, res, remote.map.bytes, { "last-modified": remote.map.modified });
-    if (url.pathname === "/europe/testland-latest.osm.pbf.md5") return text(200, `${md5(remote.map.bytes)}  testland-latest.osm.pbf\n`);
-    text(404, "not found");
-  });
-  await new Promise((resolve) => remote.server.listen(0, "127.0.0.1", resolve));
-  remote.url = `http://127.0.0.1:${remote.server.address().port}`;
-});
+before(() => remote.start());
 after(async () => {
-  await new Promise((resolve) => remote.server.close(resolve));
-  remote.server.closeAllConnections();
+  await remote.close();
   fixture.cleanup();
 });
 
@@ -323,10 +240,7 @@ test("a download whose checksum does not match is discarded", async () => {
 test("a ZIM without a published checksum is refused unless checksum is off", async () => {
   // The server stops serving the .meta4 file of the book, and there is no .sha256 file either.
   const config = makeConfig({ downloads: [{ zim: "wikipedia_nl_all_nopic" }], kiwixCatalog: `${remote.url}/catalog/v2`, keepOldEditions: true });
-  const meta4Path = `/zim/wikipedia/${NEW_WIKIPEDIA}.zim.meta4`;
-  const handler = remote.server.listeners("request")[0];
-  remote.server.removeAllListeners("request");
-  remote.server.on("request", (req, res) => (req.url === meta4Path ? (res.writeHead(404), res.end()) : handler(req, res)));
+  remote.meta4Missing = true;
   try {
     fs.rmSync(path.join(fixture.zimDir, `${NEW_WIKIPEDIA}.zim`), { force: true });
     const refused = await createLibrary(config, quiet).update();
@@ -336,8 +250,7 @@ test("a ZIM without a published checksum is refused unless checksum is off", asy
     assert.equal(allowed.items[0].action, "downloaded");
     assert.equal(JSON.parse(fs.readFileSync(config.library.stateFile, "utf8")).items["zim:wikipedia_nl_all_nopic"].checksum, null);
   } finally {
-    remote.server.removeAllListeners("request");
-    remote.server.on("request", handler);
+    remote.meta4Missing = false;
   }
 });
 

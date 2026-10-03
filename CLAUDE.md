@@ -22,13 +22,15 @@ The tests are self-contained: they build a small library in a temporary folder a
 - `src/reader.js`: bounded reading of files inside a source.
 - `src/evidence.js`: the verdict for "who is X?" questions.
 - `src/guard.js`: protection against repeated tool calls.
-- `src/mcp.js`, `src/http.js`: the MCP tools, over stdio and stateless Streamable HTTP.
+- `src/mcp.js`, `src/http.js`: the MCP tools, over stdio and stateless Streamable HTTP. `http.js` also serves the admin page and can swap in a new application after a configuration change.
+- `src/admin.js`: the admin page's JSON API and jobs (index, library update, model pull); `src/setup.js`: environment checks with platform advice (also `doctor`); `src/catalogue.js`: curated entries, Kiwix catalogue search, Geofabrik regions; `src/configfile.js`: editing the owner's config file; `src/ui/`: the page (plain HTML, CSS and JS; nothing external, because the library is offline).
 - `src/text.js`: text helpers and the two error classes.
 
 ## Rules
 
 - Plain ESM JavaScript for Node.js 22.13 or newer, without a build step. The only runtime dependencies are `@modelcontextprotocol/sdk` and `zod`; add one only with a good reason.
-- Arviro is read-only. Do not add a tool that changes files in a source. The `library` command is the one exception: it writes ZIM files and map extracts for the owner, from the command line only, and never through MCP.
+- Arviro is read-only. Do not add a tool that changes files in a source. The `library` command and the admin page are the exception: they write ZIM files, map extracts and the configuration file for the owner, never through MCP.
+- The admin page is served to loopback connections only (or with `server.authToken`), accepts its own origin and no other, and its API takes JSON only. Keep it that way: it changes the configuration and starts downloads. It never shows the content of documents.
 - Every path that comes from a caller goes through `resolveInside` in `src/reader.js`. What the index leaves out (hidden, excluded, nested sources) must not be readable either.
 - Every function that returns content takes a scope. When you add a feature, add a test that the `public` scope does not show private sources.
 - Code that runs on document content must be linear in the size of the input: no regular expression that can backtrack over an unbounded part of the text. `test/text.test.js` has timing tests for this; extend them when you add a pattern.

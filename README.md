@@ -45,16 +45,21 @@ On macOS with Homebrew: `brew install node poppler osmium-tool`. Download kiwix-
 git clone https://github.com/ymebosma/arviro.git
 cd arviro
 npm install
-mkdir -p ~/.config/arviro
-cp arviro.config.example.json ~/.config/arviro/config.json
 ```
 
-Edit `~/.config/arviro/config.json` so that it points at your own folders (see [Configuration](#configuration)). Then:
+Then start the server and open its admin page:
+
+```bash
+node bin/arviro.js serve      # starts the server on http://127.0.0.1:8765
+```
+
+Open <http://127.0.0.1:8765/admin/> in a browser. The page shows what is installed and what is missing (with the command to install it, and a button where the page can do it itself), lets you add document folders, choose encyclopedias and maps from the catalogues, download them, and build the search index. It writes `~/.config/arviro/config.json` for you; see [The admin page](#the-admin-page).
+
+The same can be done by hand: copy `arviro.config.example.json` to `~/.config/arviro/config.json`, edit it so that it points at your own folders (see [Configuration](#configuration)), and run:
 
 ```bash
 node bin/arviro.js doctor     # checks the configuration and the helper programs
 node bin/arviro.js index      # builds the search index; run it again after adding documents
-node bin/arviro.js serve      # starts the server on http://127.0.0.1:8765
 ```
 
 `node bin/arviro.js library update` downloads the ZIM files and map extracts listed in the configuration; see [Keeping the library up to date](#keeping-the-library-up-to-date).
@@ -67,6 +72,16 @@ Try a search without any chat app:
 node bin/arviro.js search library "how do I make water safe to drink?"
 node bin/arviro.js read library manuals/water.md
 ```
+
+## The admin page
+
+`arviro serve` also serves a page for you, the owner, at `/admin/`. It is only reachable from the computer itself, unless `server.authToken` is set; then the page asks for that token. Set `server.admin` to `false` to switch it off.
+
+- **Environment**: the checks of `arviro doctor`, with the command to install what is missing on your platform. The page itself can pull the embedding model through Ollama and build the index.
+- **Library**: your document folders (with a folder browser), the download list with what is on disk and how old it is, buttons to check for updates and to update, and a search in the Kiwix catalogue and Geofabrik's region list to add encyclopedias and maps. A few common choices are shown before you search.
+- **Connect**: the URLs and tokens a chat app needs, and the steps for Open WebUI.
+
+Changes are written to the configuration file (relative to `~` where possible) and take effect at once; only `server.*` settings need a restart. Jobs such as an index build run one at a time in the server, with their log on the page. The MCP endpoints do not change: `/admin/` is not a tool, and the model cannot reach it.
 
 ## Use with Open WebUI
 
@@ -148,12 +163,14 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `library.indexAfterUpdate` | Run the index after a download. Default `true`. |
 | `library.keepOldEditions` | Keep earlier editions of a ZIM file after a newer one is downloaded. Default `false`: they are deleted. |
 | `library.kiwixCatalog` | The Kiwix catalogue to ask for the latest editions. Default `https://library.kiwix.org/catalog/v2`. |
+| `library.geofabrikIndex` | Geofabrik's region list, used by the admin page. Default `https://download.geofabrik.de/index-v1-nogeom.json`. |
 | `embedding.provider` | `ollama` (default) or `none` for full-text search only. |
 | `embedding.url`, `.model`, `.dimensions` | Default `http://127.0.0.1:11434`, `qwen3-embedding:0.6b`, 512. After changing the model or the dimensions, run `arviro index`: it rebuilds the index. Until then, search uses words only and says so. |
 | `server.host`, `.port` | Default `127.0.0.1` and 8765. |
 | `server.authToken` | Bearer token for `/mcp`, the endpoint with all sources. |
 | `server.publicToken` | Bearer token for `/public/mcp`. The token of `/mcp` is accepted here too. |
 | `server.allowedHosts`, `.allowedOrigins` | Extra `Host` and `Origin` header values to accept. |
+| `server.admin` | `false` switches the admin page at `/admin/` off. Default `true`. |
 | `search.minSemanticScore` | How similar a passage must be when none of the question's words occur in it. Default 0.76, tuned for `qwen3-embedding`. |
 | `search.queryExpansions` | List of `[pattern, terms]`: when the pattern matches the question, the terms are added. The default list maps common Dutch emergency and medical words to English. |
 | `read.maxChars` | Size of one part returned by `read_document`. Default 12000 characters. |
@@ -222,7 +239,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.arviro.plist
 ## Security
 
 - **Read-only.** `read_document` only returns documents that a source offers. Paths are resolved first, so a symbolic link cannot lead outside the source or into a hidden or excluded folder.
-- **Local by default.** The server listens on 127.0.0.1. Requests that carry a web page's `Origin` header or an unknown `Host` header are refused, so a website in your browser cannot query it.
+- **Local by default.** The server listens on 127.0.0.1. Requests that carry a web page's `Origin` header or an unknown `Host` header are refused, so a website in your browser cannot query it. The admin page is the one page the server serves itself; its own origin is accepted, and it is only served to connections from the computer itself (or with the token of `/mcp`).
+- **The admin page changes the configuration.** Anyone who can open it can add folders to the library and start downloads. On a shared computer, set `server.authToken`; then the page needs that token too.
 - **No login by default.** Without tokens, every program and every user on the computer can call both endpoints. Private sources are then kept from the public endpoint, but not from someone who calls `/mcp` directly. Set `server.authToken` when that matters, and always when the host is not 127.0.0.1.
 - **Private and public.** To share only the public sources with other people, give their chat app the `/public/mcp` URL and keep the token of `/mcp` to yourself. In Open WebUI that means two connections, each with its own access control.
 - **Documents are untrusted input.** The tool descriptions tell the model so, but a model can still be misled by text in a document. Do not connect Arviro to a model that can also take actions you would not want a document to trigger.
@@ -236,11 +254,13 @@ npm test
 
 The tests build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext, so none of those need to be installed.
 
-Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP.
+Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js` and `src/ui/` are the admin page.
 
 ## Not there yet
 
 - Map search only knows places and amenities that OpenStreetMap stores as a point. A hospital or shop drawn as a building outline is not found yet.
+- A chat page of its own, so that Arviro can be used without Open WebUI.
+- Packaged installers for macOS, Windows and Linux, and a client for phones.
 - Pages to view articles and maps in a browser, so answers can link to them.
 - A tool for the assistant's own notes and tasks.
 
