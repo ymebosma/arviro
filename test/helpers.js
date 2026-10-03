@@ -36,6 +36,9 @@ const OPL = [
   "n5 v1 dV c0 t i0 u Tplace=village,name=Anderdorp x5.5000000 y52.5000000",
   "n6 v1 dV c0 t i0 u Tamenity=hospital,name=Ziekenhuis%20%Anderdorp x5.5050000 y52.5010000",
   "n7 v1 dV c0 t i0 u Thighway=crossing x5.2 y52.2",
+  // A hamlet whose name is a category word: must not be taken for the place in "pharmacy near the station of Testdorp".
+  "n8 v1 dV c0 t i0 u Tplace=hamlet,name=Het%20%Station x6.5000000 y53.6000000",
+  "n9 v1 dV c0 t i0 u Tamenity=pharmacy,name=Apotheek%20%Station x6.5010000 y53.6010000",
 ].join("\n");
 
 /**

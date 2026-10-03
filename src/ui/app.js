@@ -311,6 +311,22 @@ async function sendChat() {
   $("#chat-stop").classList.remove("hidden");
   let bubble = addBubble("assistant");
   let call = null;
+  let thinking = null;
+  // A thinking model's reasoning is shown dimmed while it streams, and folded away once the answer starts.
+  const think = (text) => {
+    if (!thinking) {
+      thinking = el("details", { class: "call thinking", open: "" }, [el("summary", { text: "Thinking…" }), el("pre", { text: "" })]);
+      bubble.before(thinking);
+    }
+    thinking.querySelector("pre").textContent += text;
+    thinking.scrollIntoView({ block: "end" });
+  };
+  const doneThinking = () => {
+    if (!thinking) return;
+    thinking.removeAttribute("open");
+    thinking.querySelector("summary").textContent = "Thought";
+    thinking = null;
+  };
   try {
     const headers = { "content-type": "application/json" };
     if (state.token) headers.authorization = `Bearer ${state.token}`;
@@ -321,8 +337,9 @@ async function sendChat() {
     const decoder = new TextDecoder();
     let buffered = "";
     const handle = (event) => {
-      if (event.type === "token") { bubble.textContent += event.text; bubble.scrollIntoView({ block: "end" }); }
-      else if (event.type === "tool") { call = addCall(event.name, event.args); }
+      if (event.type === "thinking") { think(event.text); }
+      else if (event.type === "token") { doneThinking(); bubble.textContent += event.text; bubble.scrollIntoView({ block: "end" }); }
+      else if (event.type === "tool") { doneThinking(); call = addCall(event.name, event.args); }
       else if (event.type === "toolResult") { if (call) call.querySelector("pre").textContent = event.text; call = null; }
       else if (event.type === "message") {
         chat.history.push(event.message);
@@ -343,8 +360,10 @@ async function sendChat() {
         if (line) handle(JSON.parse(line));
       }
     }
+    doneThinking();
     if (!bubble.textContent) bubble.remove();
   } catch (error) {
+    doneThinking();
     if (chat.controller.signal.aborted) { if (!bubble.textContent) bubble.textContent = "[stopped]"; }
     else addBubble("error", error.message);
   } finally {

@@ -201,6 +201,8 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
     if (method === "GET" && route === "jobs") return { status: 200, body: { job: jobs.current } };
     if (method === "GET" && route === "chat/models") {
       const current = config();
+      // Without Ollama for embeddings, the chat needs its own chat.url; the default Ollama address is not assumed.
+      if (current.embedding.provider !== "ollama" && !current.chat.url) return { status: 200, body: { models: [], default: current.chat.model || null, url: null, error: "The chat needs Ollama: set chat.url, or embedding.provider to ollama." } };
       try {
         const models = await chat.models();
         return { status: 200, body: { models, default: current.chat.model || models[0] || null, url: current.chat.url || current.embedding.url } };

@@ -38,7 +38,11 @@ function startFakeOllama() {
         res.writeHead(200, { "content-type": "application/x-ndjson" });
         const last = request.messages.at(-1);
         const line = (message, done = false) => res.write(`${JSON.stringify({ model: request.model, message, done })}\n`);
+        // A "slow" model thinks forever: the connection stays open until the client gives up.
+        if (request.model === "slow") return line({ role: "assistant", content: "", thinking: "Hmm" });
         if (last.role === "user") {
+          line({ role: "assistant", content: "", thinking: "The user asks about " });
+          line({ role: "assistant", content: "", thinking: "the library; I should search." });
           line({ role: "assistant", content: "", tool_calls: [{ function: { name: "search_library", arguments: { source: "library", query: last.content } } }] });
           line({ role: "assistant", content: "" }, true);
         } else {
@@ -354,7 +358,8 @@ test("the chat answers with the library tools through Ollama", async () => {
     const { status, events } = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }] });
     assert.equal(status, 200);
     const types = events.map((event) => event.type);
-    assert.deepEqual(types, ["message", "tool", "toolResult", "message", "token", "token", "message", "done"], JSON.stringify(events));
+    assert.deepEqual(types, ["thinking", "thinking", "message", "tool", "toolResult", "message", "token", "token", "message", "done"], JSON.stringify(events));
+    assert.equal(events.filter((event) => event.type === "thinking").map((event) => event.text).join(""), "The user asks about the library; I should search.");
     const tool = events.find((event) => event.type === "tool");
     assert.deepEqual(tool, { type: "tool", name: "search_library", args: { source: "library", query: "How long should I cool a burn?" } });
     const result = events.find((event) => event.type === "toolResult");
@@ -375,6 +380,8 @@ test("the chat answers with the library tools through Ollama", async () => {
     assert.deepEqual(ollama.chats[0].tools.map((tool) => tool.function.name), ["search_library", "read_document"]);
     assert.deepEqual(ollama.chats[0].tools[0].function.parameters.properties.source.enum, ["library", "wiki", "wikipedia", "wikivoyage", "maps"]);
     assert.equal(ollama.chats[0].options.num_ctx, 16_384);
+    assert.equal(ollama.chats[0].options.num_predict, 8192);
+    assert.equal("think" in ollama.chats[0], false, "thinking is left to the model unless chat.think is set");
     assert.equal(ollama.chats[1].messages.at(-1).role, "tool");
     assert.match(ollama.chats[1].messages.at(-1).content, /first-aid/);
 
@@ -395,9 +402,32 @@ test("the chat answers with the library tools through Ollama", async () => {
   const noOllama = await chatTurn(server.url, { messages: [{ role: "user", content: "hi" }], model: "chatty:latest" });
   assert.equal(noOllama.status, 400);
   assert.match(noOllama.events[0].error, /needs Ollama/);
-  assert.equal((await api("chat/models")).body.models.length, 0);
+  // Without chat.url and without Ollama for embeddings, no Ollama address is assumed (an Ollama on this machine must not matter).
+  const models = (await api("chat/models")).body;
+  assert.deepEqual(models.models, []);
+  assert.match(models.error, /set chat\.url/);
   writeConfig();
 });
+
+test("a model that thinks for too long is cut off, and thinking can be switched off", async () => {
+  const other = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", think: false, numPredict: 1024, timeoutSeconds: 1 } });
+  try {
+    ollama.chats.length = 0;
+    const quick = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }] });
+    assert.equal(quick.status, 200);
+    assert.equal(ollama.chats[0].think, false);
+    assert.equal(ollama.chats[0].options.num_predict, 1024);
+    const slow = await chatTurn(other.url, { messages: [{ role: "user", content: "think hard" }], model: "slow" });
+    assert.equal(slow.status, 200, "the stream had started");
+    const last = slow.events.at(-1);
+    assert.equal(last.type, "error");
+    assert.match(last.message, /did not finish within 1 seconds/);
+    assert.equal(slow.events[0].type, "thinking");
+  } finally {
+    await other.close();
+  }
+  writeConfig();
+}, { timeout: 30_000 });
 
 test("environment checks give platform advice", async () => {
   const config = loadConfig(configPath);

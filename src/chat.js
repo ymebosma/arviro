@@ -84,8 +84,8 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
 
   /**
    * Run one turn: the model answers, calls tools as often as it needs (up to chat.maxRounds), and answers again.
-   * Yields events for the page: { type: "token", text }, { type: "tool", name, args }, { type: "toolResult", name, text },
-   * { type: "message", message } (an assistant or tool message to keep in the history) and { type: "done" }.
+   * Yields events for the page: { type: "thinking", text }, { type: "token", text }, { type: "tool", name, args },
+   * { type: "toolResult", name, text }, { type: "message", message } (an assistant or tool message to keep in the history) and { type: "done" }.
    */
   async function* run({ messages, model, signal, sessionKey = "chat" }) {
     const arviro = getArviro();
@@ -99,12 +99,27 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
     const tools = await connectTools(arviro, sessionKey);
     try {
       for (let round = 0; round <= config.chat.maxRounds; round += 1) {
-        const response = await fetchImpl(`${url}/api/chat`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: chosen, messages: history, tools: tools.definitions, stream: true, options: { num_ctx: config.chat.numCtx } }),
-          signal,
-        });
+        // A model that thinks for too long blocks every other Ollama request, including the embeddings of a search.
+        const timeout = AbortSignal.timeout(config.chat.timeoutSeconds * 1000);
+        let response;
+        try {
+          response = await fetchImpl(`${url}/api/chat`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model: chosen,
+              messages: history,
+              tools: tools.definitions,
+              stream: true,
+              ...(config.chat.think === null ? {} : { think: config.chat.think }),
+              options: { num_ctx: config.chat.numCtx, num_predict: config.chat.numPredict },
+            }),
+            signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+          });
+        } catch (error) {
+          if (timeout.aborted && !signal?.aborted) throw new UserInputError(`The model did not answer within ${config.chat.timeoutSeconds} seconds. Try a smaller model or a shorter question, or raise chat.timeoutSeconds.`);
+          throw error;
+        }
         if (!response.ok) {
           const text = (await response.text()).slice(0, 400);
           const detail = (() => { try { return JSON.parse(text).error; } catch { return text; } })();
@@ -114,12 +129,19 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         }
         let content = "";
         const toolCalls = [];
-        for await (const chunk of ndjson(response.body)) {
-          if (chunk.error) throw new Error(String(chunk.error));
-          const message = chunk.message || {};
-          if (message.content) { content += message.content; yield { type: "token", text: message.content }; }
-          for (const call of message.tool_calls || []) if (call?.function?.name) toolCalls.push({ function: { name: String(call.function.name), arguments: call.function.arguments && typeof call.function.arguments === "object" ? call.function.arguments : {} } });
-          if (chunk.done) break;
+        try {
+          for await (const chunk of ndjson(response.body)) {
+            if (chunk.error) throw new Error(String(chunk.error));
+            const message = chunk.message || {};
+            // A thinking model streams its reasoning apart from the answer; the page shows it dimmed, so a long think does not look like a hang.
+            if (message.thinking) yield { type: "thinking", text: String(message.thinking) };
+            if (message.content) { content += message.content; yield { type: "token", text: message.content }; }
+            for (const call of message.tool_calls || []) if (call?.function?.name) toolCalls.push({ function: { name: String(call.function.name), arguments: call.function.arguments && typeof call.function.arguments === "object" ? call.function.arguments : {} } });
+            if (chunk.done) break;
+          }
+        } catch (error) {
+          if (timeout.aborted && !signal?.aborted) throw new UserInputError(`The model did not finish within ${config.chat.timeoutSeconds} seconds. Try a smaller model or a shorter question, or raise chat.timeoutSeconds.`);
+          throw error;
         }
         const assistant = { role: "assistant", content, ...(toolCalls.length ? { tool_calls: toolCalls } : {}) };
         history.push(assistant);

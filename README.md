@@ -179,6 +179,8 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `chat.url` | Ollama for the chat, when it is not the one of `embedding.url`. |
 | `chat.systemPrompt` | A file with the system prompt. Default `examples/system-prompt.en.md`; `examples/system-prompt.nl.md` is the Dutch one. |
 | `chat.numCtx`, `.maxRounds` | Context size for the chat (default 16384) and how often the model may call tools in one turn (default 6). |
+| `chat.numPredict`, `.timeoutSeconds` | How many tokens the model may generate per answer, thinking included (default 8192), and how long one answer may take (default 600 seconds). A model that keeps thinking blocks every other Ollama request, so a limit matters. |
+| `chat.think` | `false` switches thinking off for models that can think (`qwen3` and the like); `true` switches it on. Unset leaves it to the model; its thinking is shown dimmed in the chat. |
 | `guard.windowMs`, `.maxCallsPerWindow`, `.maxCallsTotal` | Loop protection: at most 20 calls per 60 seconds for one connection, and 120 for all connections together. |
 | `tools.pdftotext`, `.kiwixServe`, `.osmium` | Paths of the helper programs, when they are not found automatically. |
 

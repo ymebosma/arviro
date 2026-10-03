@@ -55,7 +55,7 @@ test("listDocuments skips hidden, excluded and duplicate files", () => {
 
 test("the first build indexes everything, a second build nothing", async () => {
   assert.equal(firstBuild.documents.indexed, 7);
-  assert.equal(firstBuild.maps[0].objects, 6);
+  assert.equal(firstBuild.maps[0].objects, 8);
   const second = await buildIndex(config, embedder);
   assert.equal(second.documents.indexed, 0);
   assert.equal(second.documents.unchanged, 7);
@@ -157,7 +157,7 @@ test("status reports sources and index contents", () => {
   const status = arviro.status();
   assert.equal(status.index.buildStatus, "ready");
   assert.deepEqual(status.index.documents.map((row) => row.source), ["library", "wiki"]);
-  assert.deepEqual(status.index.maps, [{ region: "test", objects: 6 }]);
+  assert.deepEqual(status.index.maps, [{ region: "test", objects: 8 }]);
   assert.equal(status.index.dimensions, 0);
 });
 

@@ -48,7 +48,7 @@ The library content, the search index and the owner's configuration live on the 
 
 - Map search only knows OpenStreetMap nodes. Amenities drawn as building outlines (ways) are missing; indexing them needs their centre point.
 - A line longer than 1600 characters is cut when read, and the rest of that line cannot be reached.
-- The library manager has not been run against the real Kiwix catalogue and Geofabrik from here; the parsers follow the documented formats (OPDS v2 feed, Metalink 4, `.md5` files) and are tested against a stand-in server.
+- The chat has been tried with one thinking model (Qwen 3.6 through Ollama). Other models may stream differently; `src/chat.js` reads `message.thinking`, `message.content` and `message.tool_calls`.
 - Pages to view articles and maps in a browser, so answers can link to them.
 - A tool for the assistant's own notes and tasks.
 - Titles of "did you mean" suggestions exist for Kiwix sources only.

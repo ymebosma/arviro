@@ -78,6 +78,7 @@ textarea { font: inherit; padding: 7px 10px; border: 1px solid var(--line); bord
 .call { align-self: flex-start; font-size: 13px; color: var(--muted); max-width: 85%; }
 .call summary { cursor: pointer; }
 .call pre { max-height: 200px; font-size: 12px; }
+.call.thinking pre { font-family: inherit; color: var(--muted); max-height: 140px; }
 .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; max-width: 90vw; }
 .toast.error { background: var(--bad); color: #fff; }
 a { color: var(--accent); }
