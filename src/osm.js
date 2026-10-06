@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
-import { ftsQuery, normalizeComparable } from "./text.js";
+import { ftsQuery, normalizeComparable, STOPWORDS } from "./text.js";
 
 const MAX_DISTANCE_KM = 75;
 const CATEGORY_KEYS = ["place", "amenity", "shop", "tourism", "railway", "public_transport", "emergency", "healthcare", "aeroway", "social_facility", "leisure", "office", "craft", "natural", "man_made"];
@@ -22,6 +22,9 @@ export const CATEGORY_RULES = [
   { label: "airport", words: ["vliegveld", "luchthaven", "airport"], tags: [["aeroway", "aerodrome"]] },
   { label: "shelter", words: ["opvang", "schuilplaats", "shelter"], tags: [["amenity", "shelter"], ["social_facility", "shelter"]] },
 ];
+
+// Words that name a kind of place rather than a place: category words of the rules above, and stopwords.
+const GENERIC_WORDS = new Set([...STOPWORDS, ...CATEGORY_RULES.flatMap((rule) => rule.words.flatMap((word) => normalizeComparable(word).split(" ")))]);
 
 function decodeOpl(value) {
   return value.replace(/%([0-9a-fA-F]{2,6})%/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16))).replace(/%%/g, "%");
@@ -146,14 +149,20 @@ export function createOsmSearch(db) {
     return byName;
   }
 
-  /** The longest place name that occurs in the question as whole words. */
+  /**
+   * The longest place name that occurs in the question as whole words.
+   * A name made only of category words and stopwords ("Het Station", a hamlet) is not taken for the place:
+   * in "the pharmacy nearest to the station of Gouda", Gouda is meant.
+   */
   function findPlace(query, regions) {
     const words = normalizeComparable(query).split(" ").filter(Boolean);
     const byName = places();
     let best = null;
     for (let start = 0; start < words.length; start += 1) {
       for (let length = Math.min(5, words.length - start); length >= 1; length -= 1) {
-        const candidate = byName.get(words.slice(start, start + length).join(" "));
+        const candidateWords = words.slice(start, start + length);
+        if (candidateWords.every((word) => GENERIC_WORDS.has(word))) continue;
+        const candidate = byName.get(candidateWords.join(" "));
         if (!candidate || !regions.includes(candidate.region)) continue;
         if (!best || candidate.name.length > best.name.length || (candidate.name.length === best.name.length && candidate.rank > best.rank)) best = candidate;
         break;

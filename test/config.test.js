@@ -69,6 +69,8 @@ test("the example configuration in the repository is valid", () => {
   for (const id of ["library", "notes", "maps"]) assert.ok(config.sources[id], id);
   assert.equal(config.sources.notes.private, true);
   assert.equal(config.server.host, "127.0.0.1");
+  assert.deepEqual(config.library.downloads.map((item) => item.id), ["wikipedia_nl_all_nopic", "wikivoyage_nl_all_maxi", "nl"]);
+  assert.equal(config.library.downloads[2].checksum, "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf.md5");
 });
 
 test("invalid configurations are rejected with a clear message", () => {

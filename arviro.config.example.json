@@ -28,14 +28,28 @@
       "nl": "~/Library/Offline/maps/netherlands-latest.osm.pbf"
     }
   },
+  "library": {
+    "downloads": [
+      { "zim": "wikipedia_nl_all_nopic" },
+      { "zim": "wikivoyage_nl_all_maxi" },
+      { "map": "nl", "url": "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf" }
+    ],
+    "indexAfterUpdate": true,
+    "keepOldEditions": false
+  },
   "embedding": {
     "provider": "ollama",
     "url": "http://127.0.0.1:11434",
     "model": "qwen3-embedding:0.6b",
     "dimensions": 512
   },
+  "chat": {
+    "model": "",
+    "systemPrompt": ""
+  },
   "server": {
     "host": "127.0.0.1",
-    "port": 8765
+    "port": 8765,
+    "admin": true
   }
 }
