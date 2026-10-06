@@ -25,7 +25,6 @@ The tests are self-contained: they build a small library in a temporary folder a
 - `src/mcp.js`, `src/http.js`: the MCP tools, over stdio and stateless Streamable HTTP. `http.js` also serves the admin page and can swap in a new application after a configuration change.
 - `src/admin.js`: the admin page's JSON API and jobs (index, library update, model pull); `src/setup.js`: environment checks with platform advice (also `doctor`); `src/catalogue.js`: curated entries, Kiwix catalogue search, Geofabrik regions; `src/configfile.js`: editing the owner's config file; `src/chat.js`: the Chat tab, Ollama's `/api/chat` with the MCP tools through an in-memory client; `src/ui/`: the page (plain HTML, CSS and JS; nothing external, because the library is offline).
 - `src/text.js`: text helpers and the two error classes.
-- `deploy/ods/arviro/`: Arviro as an ODS (Osmantic Deployment System) extension: Dockerfile, ODS manifest and compose file, and the script that prepares the container's configuration. The manifest follows ODS's `service-manifest.v1.json`; validate it against a checkout of ODS when it changes.
 
 ## Rules
 
