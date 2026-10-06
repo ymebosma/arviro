@@ -1,0 +1,74 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: arviro
+  name: Arviro
+  aliases:
+  - library
+  container_name: ods-arviro
+  container_uid: 1000
+  host_env: ARVIRO_HOST
+  default_host: arviro
+  port: 8765
+  external_port_env: ARVIRO_PORT
+  external_port_default: 11104
+  health: /health
+  type: docker
+  startup_check: true
+  startup_timeout: 120
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Offline library (documents, Kiwix ZIM files, OpenStreetMap extracts) that a local
+    model searches and reads through MCP, with an admin page for downloads and a chat.
+  env_vars:
+  - key: ARVIRO_AUTH_TOKEN
+    required: true
+    secret: true
+    description: Bearer token for the /mcp endpoint and the admin page; Open WebUI and the owner use it.
+    min_length: 32
+    generate: token
+  - key: ARVIRO_EMBEDDING_PROVIDER
+    required: false
+    default: none
+    description: 'none for full-text search only, or ollama when the Ollama extension runs with an embedding model.'
+  - key: ARVIRO_OLLAMA_URL
+    required: false
+    default: http://ollama:11434
+    format: url
+    description: Ollama for embeddings and the chat tab; the Ollama extension by default.
+  - key: ARVIRO_REF
+    required: false
+    default: main
+    description: Git branch, tag or commit of Arviro that the image is built from.
+  llm:
+    consumes: false
+  ui_path: /admin/
+tags:
+- knowledge
+- offline
+- reference
+- mcp
+- open-source
+features:
+- id: arviro-library
+  name: Arviro offline library
+  description: Let a local model search and read an offline library of documents, encyclopedias
+    and maps through MCP, with downloads, checksums and a chat on one admin page.
+  icon: Library
+  category: productivity
+  requirements:
+    services:
+    - arviro
+    vram_gb: 0
+  enabled_services_all:
+  - arviro
+  setup_time: Image build from source; content downloads from the admin page
+  priority: 48
+  launch:
+    type: service
+    service: arviro
+    path: /admin/

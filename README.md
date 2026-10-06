@@ -235,6 +235,10 @@ To run the update on a schedule, use [`examples/launchd.library.plist`](examples
 0 4 * * 0  /usr/bin/node /path/to/arviro/bin/arviro.js library update >> ~/.local/share/arviro/library.log 2>&1
 ```
 
+## Run it inside ODS
+
+[ODS](https://github.com/Osmantic/ODS) installs a local AI stack on Docker, with Open WebUI and a catalogue of extensions. [`deploy/ods/arviro/`](deploy/ods/arviro/) makes Arviro such an extension: one container with Arviro, kiwix-serve, osmium and pdftotext, the admin page on port 11104 of the host, and the MCP endpoint at `http://arviro:8765/mcp` for ODS's Open WebUI. Its README has the steps.
+
 ## Run it as a service on macOS
 
 [`examples/launchd.plist`](examples/launchd.plist) is a LaunchAgent that starts Arviro at login and restarts it when it stops. Replace the paths in it, copy it to `~/Library/LaunchAgents/local.arviro.plist` and load it:
