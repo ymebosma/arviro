@@ -11,7 +11,7 @@ import { startHttpServer } from "../src/http.js";
 import { buildIndex } from "../src/indexer.js";
 import { createLibrary, formatLibraryRows, formatUpdate, formatVerify } from "../src/library.js";
 import { createMcpServer } from "../src/mcp.js";
-import { installService, openInBrowser, serviceStatus, uninstallService } from "../src/service.js";
+import { installService, openInBrowser, serviceStatus, stableNodePath, uninstallService } from "../src/service.js";
 import { adviceFor, checkEnvironment, hasModel, HELPER_TOOLS, ollamaModels, pullModel } from "../src/setup.js";
 import { ServiceError, UserInputError } from "../src/text.js";
 import { installKiwixTools } from "../src/tools.js";
@@ -169,9 +169,9 @@ async function setup(config) {
 /** `arviro service <install|uninstall|status>`: start at login, on this platform. Returns the exit code. */
 async function service(config, rest, options) {
   const [action = "status"] = rest;
-  const target = { nodePath: process.execPath, scriptPath: fileURLToPath(import.meta.url), configPath: config.configPath };
+  const target = { nodePath: stableNodePath(), scriptPath: fileURLToPath(import.meta.url), configPath: config.configPath };
   let lines;
-  if (action === "install") lines = installService(target);
+  if (action === "install") lines = await installService(target);
   else if (action === "uninstall") lines = uninstallService(target);
   else if (action === "status") lines = serviceStatus(target);
   else throw new UserInputError(`Unknown service command "${action}". Use: service install, uninstall or status.`);

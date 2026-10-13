@@ -9,6 +9,19 @@ import { ServiceError } from "./text.js";
 
 const LABEL = "local.arviro";
 const UPDATE_TASK = "Arviro library update";
+// Node.js as the package managers link it: these paths survive an update, the versioned Cellar path does not.
+const STABLE_NODE_PATHS = ["/opt/homebrew/opt/node/bin/node", "/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"];
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The path to put in the service files for Node.js: a stable link to the running binary when there is one. */
+export function stableNodePath(execPath = process.execPath, candidates = STABLE_NODE_PATHS) {
+  let real;
+  try { real = fs.realpathSync(execPath); } catch { return execPath; }
+  for (const candidate of candidates) {
+    try { if (fs.realpathSync(candidate) === real) return candidate; } catch {}
+  }
+  return execPath;
+}
 
 /** Open a URL in the default browser, quietly; a machine without a browser just keeps the URL in the log. */
 export function openInBrowser(url, platform = process.platform) {
@@ -154,7 +167,7 @@ export function runCommand(command, args, { ignoreFailure = false } = {}) {
  * Write the service files and start the service. `run` executes a command (injected by the tests).
  * Returns the lines to show the owner.
  */
-export function installService(options, { run = runCommand, uid = typeof process.getuid === "function" ? process.getuid() : 0 } = {}) {
+export async function installService(options, { run = runCommand, uid = typeof process.getuid === "function" ? process.getuid() : 0, sleep = sleepMs } = {}) {
   const { platform = process.platform } = options;
   const spec = serviceFiles(options);
   const lines = [];
@@ -165,9 +178,22 @@ export function installService(options, { run = runCommand, uid = typeof process
   }
   if (platform === "darwin") {
     for (const file of spec.files) {
+      const label = path.basename(file.path, ".plist");
+      const domain = `gui/${uid}`;
       // A loaded agent must be unloaded before it can be loaded again (a reinstall); a fresh one is not loaded yet.
-      run("launchctl", ["bootout", `gui/${uid}/${path.basename(file.path, ".plist")}`], { ignoreFailure: true });
-      run("launchctl", ["bootstrap", `gui/${uid}`, file.path]);
+      // bootout returns before the agent is gone, and a bootstrap of the same label fails until it is: wait for that.
+      run("launchctl", ["bootout", `${domain}/${label}`], { ignoreFailure: true });
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        const print = run("launchctl", ["print", `${domain}/${label}`], { ignoreFailure: true });
+        if (print.error || print.status !== 0) break;
+        await sleep(250);
+      }
+      let lastError = null;
+      for (let attempt = 1; attempt <= 5; attempt += 1) {
+        try { run("launchctl", ["bootstrap", domain, file.path]); lastError = null; break; }
+        catch (error) { lastError = error; await sleep(1000); }
+      }
+      if (lastError) throw new ServiceError(`${lastError.message}. The earlier agent may still be stopping; try again in a moment, or run: launchctl bootstrap ${domain} ${file.path}`);
     }
     lines.push("Arviro starts at login and runs now; the library update runs on Sunday at 04:00");
   } else if (platform === "win32") {
