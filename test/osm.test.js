@@ -48,6 +48,15 @@ test("Dutch compounds and English words select the same category", async () => {
   assert.deepEqual(english.results.map((hit) => hit.name), ["Apotheek Centrum"]);
 });
 
+test("a place named after a category word does not win from the place that is meant", async () => {
+  const found = await arviro.search({ source: "maps", query: "Welke apotheek zit het dichtst bij het station van Testdorp?" });
+  assert.equal(found.results[0].near, "Testdorp");
+  assert.deepEqual(found.results.map((hit) => hit.name), ["Apotheek Centrum"]);
+  // The hamlet is still found by its name.
+  const byName = await arviro.search({ source: "maps", query: "Het Station" });
+  assert.ok(byName.results.some((hit) => hit.name === "Het Station"));
+});
+
 test("other questions are matched against names", async () => {
   const found = await arviro.search({ source: "maps", query: "Apotheek Centrum" });
   assert.equal(found.results[0].name, "Apotheek Centrum");

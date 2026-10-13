@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- LaunchAgent that runs `arviro library update` every Sunday at 04:00: it downloads newer ZIM files and
+     map extracts from library.downloads, checks their checksums and updates the search index.
+     Replace the three paths below. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.arviro.library</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/YOU/arviro/bin/arviro.js</string>
+    <string>library</string>
+    <string>update</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>0</integer>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/Library/Logs/arviro-library.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/Library/Logs/arviro-library.log</string>
+</dict>
+</plist>
