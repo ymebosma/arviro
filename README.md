@@ -41,19 +41,16 @@ On macOS with Homebrew: `brew install node poppler osmium-tool`. Download kiwix-
 
 ## Install
 
+Install [Node.js](https://nodejs.org) 22 or newer, then:
+
 ```bash
 git clone https://github.com/ymebosma/arviro.git
 cd arviro
 npm install
+npm start
 ```
 
-Then start the server and open its admin page:
-
-```bash
-node bin/arviro.js serve      # starts the server on http://127.0.0.1:8765
-```
-
-Open <http://127.0.0.1:8765/admin/> in a browser. The page shows what is installed and what is missing (with the command to install it, and a button where the page can do it itself), lets you add document folders, choose encyclopedias and maps from the catalogues, download them, and build the search index. It writes `~/.config/arviro/config.json` for you; see [The admin page](#the-admin-page).
+The server starts on <http://127.0.0.1:8765> and, the first time, opens its admin page at <http://127.0.0.1:8765/admin/> in your browser. The page shows what is installed and what is missing (with the command to install it, and a button where the page can do it itself), lets you add document folders, choose encyclopedias and maps from the catalogues in your language, download them, and build the search index. Nothing is downloaded until you choose it. The page writes `~/.config/arviro/config.json` for you; see [The admin page](#the-admin-page).
 
 The same can be done by hand: copy `arviro.config.example.json` to `~/.config/arviro/config.json`, edit it so that it points at your own folders (see [Configuration](#configuration)), and run:
 
@@ -141,7 +138,7 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
     "notes": { "path": "~/Notes", "description": "Personal notes.", "private": true }
   },
   "kiwix": { "zimDir": "~/Library/Offline/zim" },
-  "maps": { "regions": { "nl": "~/Library/Offline/maps/netherlands-latest.osm.pbf" } }
+  "maps": { "regions": { "lu": "~/Library/Offline/maps/luxembourg-latest.osm.pbf" } }
 }
 ```
 
@@ -155,7 +152,7 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `sources.<id>.routes` | Narrows a search to a folder when the question contains one of the terms. If that finds nothing, the whole source is searched. |
 | `sources.<id>.exclude` | Extra folder or file names to leave out. `.git`, `node_modules`, `zim`, `pmtiles` and `vendor` are always left out, as is anything starting with a dot. What is left out is neither indexed nor readable. |
 | `kiwix.zimDir` | A folder with `.zim` files. Each file becomes a source named after the first part of its file name: `wikipedia_nl_all_nopic_2026-04.zim` becomes `wikipedia`. Of several editions, the newest is used. |
-| `kiwix.descriptions` | Descriptions per ZIM source, for example `{ "wikipedia": "Dutch Wikipedia" }`. |
+| `kiwix.descriptions` | Descriptions per ZIM source, for example `{ "wikipedia": "Wikipedia (offline): general knowledge" }`. |
 | `kiwix.port` | Port for the kiwix-serve process that Arviro starts on 127.0.0.1. Default 8767. |
 | `kiwix.private` | List of ZIM source ids to treat as private, for example `["wikipedia"]`. |
 | `maps.regions` | OpenStreetMap extracts (`.osm.pbf`) by region name. Together they form the source `maps`. |
@@ -206,12 +203,14 @@ If a source folder cannot be read during a run, for example because a disk is no
 ```json
 "library": {
   "downloads": [
-    { "zim": "wikipedia_nl_all_nopic" },
-    { "zim": "wikivoyage_nl_all_maxi" },
-    { "map": "nl", "url": "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf" }
+    { "zim": "wikipedia_en_all_nopic" },
+    { "zim": "wikivoyage_en_all_maxi" },
+    { "map": "lu", "url": "https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf" }
   ]
 }
 ```
+
+The admin page fills this list for you: under **Library** it shows a few common choices for your language (the browser's language to start with) and searches the Kiwix catalogue and Geofabrik's region list for the rest.
 
 - A `zim` entry is the name of a book as the [Kiwix library](https://library.kiwix.org) lists it, without the edition date. Its latest edition is looked up in the Kiwix catalogue and saved in `kiwix.zimDir`; the SHA-256 checksum from the download's metalink file is checked. Earlier editions of the same book are deleted afterwards, unless `library.keepOldEditions` is `true`.
 - A `map` entry names a region of `maps.regions` and the URL of its extract, for example from [Geofabrik](https://download.geofabrik.de). The file is saved at the region's path. The checksum is read from `<url>.md5`, as Geofabrik publishes it; set `"checksum"` to another URL (`.md5`, `.sha1` or `.sha256`) for other servers, or to `false` to download without a check.
@@ -222,7 +221,7 @@ The commands:
 arviro library status             # what is there, how big it is, how old it is, and when it was last verified
 arviro library check              # asks the servers whether newer editions exist; downloads nothing
 arviro library update             # downloads what is missing or newer, checks the checksums, then runs the index
-arviro library update nl --force  # downloads one item again, even when it is up to date
+arviro library update lu --force  # downloads one item again, even when it is up to date
 arviro library verify             # recomputes the checksums of the files on disk
 ```
 

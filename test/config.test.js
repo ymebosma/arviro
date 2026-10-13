@@ -66,11 +66,13 @@ test("each endpoint has its own optional token", () => {
 test("the example configuration in the repository is valid", () => {
   const examplePath = fileURLToPath(new URL("../arviro.config.example.json", import.meta.url));
   const config = normalizeConfig(JSON.parse(fs.readFileSync(examplePath, "utf8")), { configPath: examplePath });
-  for (const id of ["library", "notes", "maps"]) assert.ok(config.sources[id], id);
+  for (const id of ["library", "notes"]) assert.ok(config.sources[id], id);
   assert.equal(config.sources.notes.private, true);
   assert.equal(config.server.host, "127.0.0.1");
-  assert.deepEqual(config.library.downloads.map((item) => item.id), ["wikipedia_nl_all_nopic", "wikivoyage_nl_all_maxi", "nl"]);
-  assert.equal(config.library.downloads[2].checksum, "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf.md5");
+  // The example chooses no content for the owner: no map, no downloads; the admin page is where that happens.
+  assert.equal(config.sources.maps, undefined);
+  assert.deepEqual(config.library.downloads, []);
+  assert.equal(config.chat.assistantName, "the assistant");
 });
 
 test("invalid configurations are rejected with a clear message", () => {

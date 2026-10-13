@@ -6,7 +6,7 @@ import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createArviro } from "../src/arviro.js";
 import { listFolders } from "../src/admin.js";
-import { CURATED, parseCatalogueFeed, parseGeofabrikIndex, regionIdFor } from "../src/catalogue.js";
+import { CURATED, CURATED_LANGUAGES, curatedFor, parseCatalogueFeed, parseGeofabrikIndex, regionIdFor } from "../src/catalogue.js";
 import { fillAssistantName } from "../src/chat.js";
 import { loadConfig, normalizeConfig } from "../src/config.js";
 import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDownload, setDocumentSource, writeRawConfig } from "../src/configfile.js";
@@ -231,8 +231,13 @@ test("downloads are added from the catalogues and removed again", async () => {
 test("the catalogue offers curated entries and search results", async () => {
   const curatedOnly = await api("catalogue?kind=zim");
   assert.equal(curatedOnly.status, 200);
-  assert.ok(curatedOnly.body.curated.every((item) => item.kind === "zim"));
+  assert.ok(curatedOnly.body.curated.every((item) => item.kind === "zim" && item.language === "eng"), "English to start with");
   assert.deepEqual(curatedOnly.body.results, [], "without a search only the curated choices are shown");
+  const dutch = await api("catalogue?kind=zim&lang=nld");
+  assert.ok(dutch.body.curated.length > 0 && dutch.body.curated.every((item) => item.language === "nld"));
+  assert.deepEqual(dutch.body.results, [], "a language alone does not search the whole catalogue");
+  assert.ok((await api("catalogue?kind=map&lang=nld")).body.curated.some((item) => item.id === "nl"));
+  assert.ok(!(await api("catalogue?kind=map")).body.curated.some((item) => item.id === "nl"), "the Netherlands is not a default");
   const zim = await api("catalogue?kind=zim&query=wikipedia");
   // The name to add is the series of the file, flavour included; the catalogue's own <name> leaves it out.
   assert.deepEqual(zim.body.results.map((book) => book.name), ["wikipedia_nl_all_maxi", "wikipedia_nl_all_nopic"]);
@@ -252,7 +257,10 @@ test("the catalogue offers curated entries and search results", async () => {
   assert.equal(feed[0].flavour, "maxi");
   assert.equal(regionIdFor("europe/great-britain"), "great-britain");
   assert.deepEqual(parseGeofabrikIndex({ features: [{ properties: { id: "a", urls: { pbf: "u" } } }, { properties: {} }] }), [{ id: "a", name: "a", parent: null, url: "u" }]);
-  assert.ok(CURATED.some((item) => item.kind === "map" && item.id === "nl"));
+  assert.deepEqual(CURATED_LANGUAGES, ["eng", "nld", "deu", "fra"]);
+  assert.ok(curatedFor("map", "nld").some((item) => item.id === "nl"));
+  assert.ok(curatedFor("zim", "xyz").every((item) => item.language === "eng"), "an unknown language gives the English choices");
+  assert.ok(CURATED.every((item) => item.kind === "map" ? /^https:\/\/download\.geofabrik\.de\/.*-latest\.osm\.pbf$/.test(item.url) : /^[a-z]+_[a-z]{2}_/.test(item.name)));
 });
 
 test("jobs run one at a time: the index, a library check and a library update", async () => {

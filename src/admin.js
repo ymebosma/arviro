@@ -224,17 +224,17 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
     if (method === "GET" && route === "folders") return { status: 200, body: listFolders(query.get("path")) };
     if (method === "GET" && route === "catalogue") {
       const kind = query.get("kind") === "map" ? "map" : "zim";
-      const curated = catalogue().curated.filter((item) => item.kind === kind);
       const search = (query.get("query") || "").trim();
       const lang = (query.get("lang") || "").trim();
-      // Without a search, only the curated choices are shown; the whole catalogue is too much to browse.
-      if (!search && !lang) return { status: 200, body: { kind, curated, results: [] } };
+      // Without a search, only the curated choices for the language are shown; the whole catalogue is too much to browse.
+      const curated = catalogue().curatedFor(kind, lang);
+      if (!search) return { status: 200, body: { kind, lang, curated, results: [] } };
       try {
         const results = kind === "zim" ? await catalogue().searchZim({ query: search, lang }) : await catalogue().searchMaps({ query: search });
-        return { status: 200, body: { kind, curated, results } };
+        return { status: 200, body: { kind, lang, curated, results } };
       } catch (error) {
         log(`catalogue: ${error.message}`);
-        return { status: 200, body: { kind, curated, results: [], error: "The catalogue could not be reached. Is this computer online?" } };
+        return { status: 200, body: { kind, lang, curated, results: [], error: "The catalogue could not be reached. Is this computer online?" } };
       }
     }
     if (method !== "POST") throw new UserInputError("Unknown admin call.");
