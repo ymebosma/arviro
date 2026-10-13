@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Command line entry point: run the MCP server, build the index, or try a search by hand.
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createArviro } from "../src/arviro.js";
@@ -14,12 +15,12 @@ import { checkEnvironment } from "../src/setup.js";
 import { UserInputError } from "../src/text.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-const FLAGS = new Set(["public", "full", "force", "no-index", "help", "version"]);
+const FLAGS = new Set(["public", "full", "force", "no-index", "no-open", "help", "version"]);
 const USAGE = `Arviro ${VERSION}: search and read your offline library through MCP.
 
 Usage: arviro <command> [options]
 
-  serve                      run the MCP server over HTTP (for Open WebUI and other clients)
+  serve [--no-open]          run the MCP server over HTTP (for Open WebUI and other clients); on a first start the admin page opens in your browser
   stdio [--public]           run the MCP server over stdio (for clients that start it themselves)
   index [--full]             update the search index (--full rebuilds it from scratch)
   search <source> <query>    try a search   [--prefix <folder>] [--limit <n>] [--public]
@@ -73,14 +74,30 @@ function closeOnExit(arviro, extra = async () => {}) {
   return shutdown;
 }
 
-async function serve(config) {
+/** Open a URL in the default browser, quietly; a machine without a browser just prints the URL. */
+function openInBrowser(url) {
+  const [command, args] = process.platform === "darwin" ? ["open", [url]]
+    : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+      : ["xdg-open", [url]];
+  try {
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {});
+    child.unref();
+  } catch {}
+}
+
+async function serve(config, options = {}) {
   const arviro = createArviro(config, { log });
   const guard = createGuard(config.guard);
   const server = await startHttpServer(arviro, { guard, version: VERSION, log });
   // The admin page can replace the application after a configuration change, so always close the current one.
   closeOnExit({ close: () => server.current().close(), kiwix: { stop: () => server.current().kiwix.stop() } }, () => server.close());
   log(`listening on ${server.url}  (all sources: /mcp, public sources: /public/mcp${config.server.admin ? `, admin page: ${server.url}/admin/` : ""})`);
-  if (config.missing) log(`no configuration file at ${config.configPath} yet; open ${server.url}/admin/ to add sources`);
+  if (config.missing) {
+    log(`no configuration file at ${config.configPath} yet; open ${server.url}/admin/ to add sources`);
+    // A first start: the admin page is where everything begins, so open it.
+    if (config.server.admin && !options["no-open"]) openInBrowser(`${server.url}/admin/`);
+  }
   if (!config.server.authToken && arviro.sources("all").some((source) => source.private)) {
     log("note: private sources are served on /mcp without a token, so every program on this computer can read them; set server.authToken to prevent that");
   }
@@ -149,7 +166,7 @@ async function main() {
   // The server starts without a configuration file, so that the admin page can create one.
   const config = loadConfig(options.config, { allowMissing: command === "serve" });
   const scope = options.public ? "public" : "all";
-  if (command === "serve") return serve(config);
+  if (command === "serve") return serve(config, options);
   if (command === "stdio") return stdio(config, options);
   if (command === "doctor") { process.exitCode = await doctor(config); return; }
   if (command === "library") { process.exitCode = await library(config, rest, options); return; }

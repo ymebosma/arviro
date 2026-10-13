@@ -7,22 +7,42 @@ const MAX_RESPONSE = 8 * 1024 * 1024;
 const CACHE_MS = 60 * 60 * 1000;
 const USER_AGENT = "arviro-admin (https://github.com/ymebosma/arviro)";
 
-/** A starting point for people who do not know the catalogues yet. */
+/**
+ * A starting point for people who do not know the catalogues yet, per language (ISO 639-3, as the Kiwix
+ * catalogue uses). Nothing here is downloaded by itself; the owner chooses on the admin page.
+ */
 export const CURATED = Object.freeze([
-  { kind: "zim", name: "wikipedia_nl_all_nopic", title: "Wikipedia, Dutch, without pictures", note: "General knowledge, people, places. The smallest complete edition." },
-  { kind: "zim", name: "wikipedia_nl_all_maxi", title: "Wikipedia, Dutch, with pictures", note: "The same articles, with images; much larger." },
-  { kind: "zim", name: "wikipedia_en_all_nopic", title: "Wikipedia, English, without pictures", note: "The full English Wikipedia; tens of gigabytes." },
-  { kind: "zim", name: "wikipedia_en_medicine_maxi", title: "WikiMed, English", note: "The medical articles of Wikipedia." },
-  { kind: "zim", name: "wikivoyage_nl_all_maxi", title: "Wikivoyage, Dutch", note: "Travel guides." },
-  { kind: "zim", name: "wikivoyage_en_all_maxi", title: "Wikivoyage, English", note: "Travel guides." },
-  { kind: "zim", name: "wiktionary_nl_all_maxi", title: "Wiktionary, Dutch", note: "Dictionary." },
-  { kind: "map", id: "nl", title: "Netherlands", url: "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf" },
-  { kind: "map", id: "be", title: "Belgium", url: "https://download.geofabrik.de/europe/belgium-latest.osm.pbf" },
-  { kind: "map", id: "lu", title: "Luxembourg", url: "https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf" },
-  { kind: "map", id: "de", title: "Germany", url: "https://download.geofabrik.de/europe/germany-latest.osm.pbf" },
-  { kind: "map", id: "fr", title: "France", url: "https://download.geofabrik.de/europe/france-latest.osm.pbf" },
-  { kind: "map", id: "gb", title: "Great Britain", url: "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf" },
+  { kind: "zim", language: "eng", name: "wikipedia_en_all_mini", title: "Wikipedia, English, introductions only", note: "The first part of every article; the smallest edition." },
+  { kind: "zim", language: "eng", name: "wikipedia_en_all_nopic", title: "Wikipedia, English, without pictures", note: "Every article in full; tens of gigabytes." },
+  { kind: "zim", language: "eng", name: "wikipedia_en_medicine_maxi", title: "WikiMed, English", note: "The medical articles of Wikipedia." },
+  { kind: "zim", language: "eng", name: "wikivoyage_en_all_maxi", title: "Wikivoyage, English", note: "Travel guides." },
+  { kind: "zim", language: "nld", name: "wikipedia_nl_all_nopic", title: "Wikipedia, Dutch, without pictures", note: "General knowledge, people, places. The smallest complete edition." },
+  { kind: "zim", language: "nld", name: "wikipedia_nl_all_maxi", title: "Wikipedia, Dutch, with pictures", note: "The same articles, with images; much larger." },
+  { kind: "zim", language: "nld", name: "wikivoyage_nl_all_maxi", title: "Wikivoyage, Dutch", note: "Travel guides." },
+  { kind: "zim", language: "nld", name: "wiktionary_nl_all_maxi", title: "Wiktionary, Dutch", note: "Dictionary." },
+  { kind: "zim", language: "deu", name: "wikipedia_de_all_nopic", title: "Wikipedia, German, without pictures", note: "General knowledge, people, places." },
+  { kind: "zim", language: "deu", name: "wikivoyage_de_all_maxi", title: "Wikivoyage, German", note: "Travel guides." },
+  { kind: "zim", language: "fra", name: "wikipedia_fr_all_nopic", title: "Wikipedia, French, without pictures", note: "General knowledge, people, places." },
+  { kind: "zim", language: "fra", name: "wikivoyage_fr_all_maxi", title: "Wikivoyage, French", note: "Travel guides." },
+  { kind: "map", language: "eng", id: "gb", title: "Great Britain", url: "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf" },
+  { kind: "map", language: "eng", id: "ie", title: "Ireland and Northern Ireland", url: "https://download.geofabrik.de/europe/ireland-and-northern-ireland-latest.osm.pbf" },
+  { kind: "map", language: "nld", id: "nl", title: "Netherlands", url: "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf" },
+  { kind: "map", language: "nld", id: "be", title: "Belgium", url: "https://download.geofabrik.de/europe/belgium-latest.osm.pbf" },
+  { kind: "map", language: "deu", id: "de", title: "Germany", url: "https://download.geofabrik.de/europe/germany-latest.osm.pbf" },
+  { kind: "map", language: "deu", id: "at", title: "Austria", url: "https://download.geofabrik.de/europe/austria-latest.osm.pbf" },
+  { kind: "map", language: "deu", id: "ch", title: "Switzerland", url: "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf" },
+  { kind: "map", language: "fra", id: "fr", title: "France", url: "https://download.geofabrik.de/europe/france-latest.osm.pbf" },
+  { kind: "map", language: "fra", id: "be", title: "Belgium", url: "https://download.geofabrik.de/europe/belgium-latest.osm.pbf" },
+  { kind: "map", language: "fra", id: "ch", title: "Switzerland", url: "https://download.geofabrik.de/europe/switzerland-latest.osm.pbf" },
 ]);
+
+export const CURATED_LANGUAGES = Object.freeze([...new Set(CURATED.map((item) => item.language))]);
+
+/** The curated choices of one kind for a language; an unknown or empty language gives the English ones. */
+export function curatedFor(kind, language = "") {
+  const chosen = CURATED_LANGUAGES.includes(language) ? language : "eng";
+  return CURATED.filter((item) => item.kind === kind && item.language === chosen);
+}
 
 const text = (xml, name) => decodeEntities(xmlElements(xml, name)[0]?.body ?? "").trim() || null;
 
@@ -104,5 +124,5 @@ export function createCatalogue({ kiwixCatalog, geofabrikIndex, fetchImpl = fetc
       .map((region) => ({ ...region, suggestedId: regionIdFor(region.id) }));
   }
 
-  return { curated: CURATED, searchZim, searchMaps };
+  return { curated: CURATED, curatedFor, searchZim, searchMaps };
 }

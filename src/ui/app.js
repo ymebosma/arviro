@@ -222,7 +222,7 @@ async function searchCatalogue() {
   const kind = $("#catalogue-kind").value;
   const query = $("#catalogue-query").value;
   const lang = $("#catalogue-lang").value;
-  $("#catalogue-lang").disabled = kind !== "zim";
+  $("#catalogue-lang").disabled = false;
   $("#catalogue-note").textContent = "Searching…";
   let data;
   try {
@@ -238,12 +238,13 @@ async function searchCatalogue() {
     el("td", {}, [el("div", { text: note })]),
     el("td", {}, present.has(id) ? el("span", { class: "muted", text: "in the list" }) : el("button", { class: "small", type: "button", onclick: () => change("downloads", body) }, "Add")),
   ]));
-  const searched = Boolean(query.trim() || (kind === "zim" && lang));
+  const searched = Boolean(query.trim());
   if (!searched) for (const item of data.curated) addRow(item.title, item.kind === "zim" ? `${item.name} · ${item.note}` : item.url, item.kind === "zim" ? item.name : item.id, item.kind === "zim" ? { zim: item.name } : { map: item.id, url: item.url });
   if (kind === "zim") for (const book of data.results) addRow(book.title || book.name, [book.name, book.language, book.flavour, book.edition, bytes(book.bytes), book.summary].filter(Boolean).join(" · "), book.name, { zim: book.name });
   else for (const region of data.results) addRow(region.name, `${region.id} · ${region.url}`, region.suggestedId, { map: region.suggestedId, url: region.url });
   $("#catalogue tbody").replaceChildren(...rows);
-  $("#catalogue-note").textContent = data.error ? data.error : !searched ? "A few common choices; search the catalogue for more." : rows.length ? `${data.results.length} found.` : "Nothing found.";
+  const languageName = $("#catalogue-lang").selectedOptions[0]?.textContent || "your language";
+  $("#catalogue-note").textContent = data.error ? data.error : !searched ? `A few common choices for ${languageName}; choose another language, or search the catalogue for more.` : rows.length ? `${data.results.length} found.` : "Nothing found.";
 }
 
 // Folder browser
@@ -450,6 +451,10 @@ function init() {
   });
   $("#catalogue-form").addEventListener("submit", (event) => { event.preventDefault(); searchCatalogue(); });
   $("#catalogue-kind").addEventListener("change", searchCatalogue);
+  $("#catalogue-lang").addEventListener("change", searchCatalogue);
+  // The browser's language picks the curated choices to start with.
+  const browserLanguage = { nl: "nld", de: "deu", fr: "fra" }[String(navigator.language || "").slice(0, 2).toLowerCase()] || "eng";
+  if ([...$("#catalogue-lang").options].some((option) => option.value === browserLanguage)) $("#catalogue-lang").value = browserLanguage;
   refresh();
 }
 

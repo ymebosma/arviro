@@ -2,7 +2,7 @@
   "dataDir": "~/.local/share/arviro",
   "sources": {
     "library": {
-      "path": "~/Library/Offline",
+      "path": "~/Documents/Library",
       "description": "Offline reference library: emergency plans, first aid, survival guides and technical manuals.",
       "expandQueries": true,
       "routes": [
@@ -10,30 +10,21 @@
       ]
     },
     "notes": {
-      "path": "~/Notes",
+      "path": "~/Documents/Notes",
       "description": "Personal notes.",
       "private": true
     }
   },
   "kiwix": {
-    "zimDir": "~/Library/Offline/zim",
+    "zimDir": "~/Documents/Library/zim",
     "port": 8767,
     "descriptions": {
       "wikipedia": "Wikipedia (offline): general knowledge, people, places and organisations.",
       "wikivoyage": "Wikivoyage (offline): travel guides."
     }
   },
-  "maps": {
-    "regions": {
-      "nl": "~/Library/Offline/maps/netherlands-latest.osm.pbf"
-    }
-  },
   "library": {
-    "downloads": [
-      { "zim": "wikipedia_nl_all_nopic" },
-      { "zim": "wikivoyage_nl_all_maxi" },
-      { "map": "nl", "url": "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf" }
-    ],
+    "downloads": [],
     "indexAfterUpdate": true,
     "keepOldEditions": false
   },
