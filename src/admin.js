@@ -8,13 +8,14 @@ import { fileURLToPath } from "node:url";
 import { createArviro } from "./arviro.js";
 import { createCatalogue } from "./catalogue.js";
 import { createChat } from "./chat.js";
-import { ConfigError, expandHome, loadConfig } from "./config.js";
+import { ConfigError, expandHome, loadConfig, userBinDir } from "./config.js";
 import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDocumentSource, removeDownload, setDocumentSource, writeRawConfig } from "./configfile.js";
 import { createEmbedder } from "./embeddings.js";
 import { buildIndex } from "./indexer.js";
 import { createLibrary, formatBytes } from "./library.js";
-import { checkEnvironment } from "./setup.js";
+import { checkEnvironment, pullModel } from "./setup.js";
 import { UserInputError } from "./text.js";
+import { installKiwixTools, KIWIX_TOOLS_URL } from "./tools.js";
 
 const UI_DIR = fileURLToPath(new URL("./ui/", import.meta.url));
 const STATIC = { "": "index.html", "index.html": "index.html", "app.js": "app.js", "markdown.js": "markdown.js", "style.css": "style.css" };
@@ -49,39 +50,6 @@ function createJobs(log) {
   return { start, get current() { return current; } };
 }
 
-/** Pull a model through Ollama's streaming /api/pull. */
-async function pullModel(embedding, line, fetchImpl) {
-  const response = await fetchImpl(`${embedding.url}/api/pull`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: embedding.model, stream: true }),
-  });
-  if (!response.ok) throw new Error(`Ollama answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
-  let buffered = "";
-  let lastStatus = "";
-  let nextPercent = 0;
-  for await (const chunk of response.body) {
-    buffered += Buffer.from(chunk).toString("utf8");
-    let newline;
-    while ((newline = buffered.indexOf("\n")) >= 0) {
-      const text = buffered.slice(0, newline).trim();
-      buffered = buffered.slice(newline + 1);
-      if (!text) continue;
-      const event = JSON.parse(text);
-      if (event.error) throw new Error(event.error);
-      if (event.total && event.completed != null) {
-        const percent = Math.floor(event.completed / event.total * 100);
-        if (percent >= nextPercent) { line(`${event.status}: ${percent}%`); nextPercent = percent + 10; }
-      } else if (event.status && event.status !== lastStatus) {
-        line(event.status);
-        lastStatus = event.status;
-        nextPercent = 0;
-      }
-    }
-  }
-  return { model: embedding.model };
-}
-
 /** Subfolders of a folder, for choosing a document source. Hidden folders are left out. */
 export function listFolders(requested) {
   const target = path.resolve(expandHome(requested || os.homedir()));
@@ -102,7 +70,7 @@ export function listFolders(requested) {
  * @param {() => object} options.getArviro   the running application
  * @param {(next: object) => void} options.replace   swap in a new application after the configuration changed
  */
-export function createAdmin({ getArviro, replace, guard, version, log = () => {}, fetchImpl = fetch, platform = process.platform }) {
+export function createAdmin({ getArviro, replace, guard, version, log = () => {}, fetchImpl = fetch, platform = process.platform, binDir = userBinDir(platform), kiwixToolsUrl = KIWIX_TOOLS_URL }) {
   const jobs = createJobs(log);
   const config = () => getArviro().config;
   const chat = createChat({ getArviro, guard, version, log, fetchImpl });
@@ -202,6 +170,14 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
     if (job === "ollama-pull") {
       if (current.embedding.provider !== "ollama") throw new UserInputError("Embeddings are disabled in the configuration.");
       return jobs.start(`pull ${current.embedding.model}`, (line) => pullModel(current.embedding, line, fetchImpl));
+    }
+    if (job === "kiwix-tools") {
+      return jobs.start("install kiwix-tools", async (line) => {
+        const result = await installKiwixTools({ binDir, platform, fetchImpl, log: line, listingUrl: kiwixToolsUrl });
+        // The configuration finds kiwix-serve in that folder by itself; a reload picks it up and starts kiwix-serve.
+        reload();
+        return result;
+      });
     }
     throw new UserInputError(`Unknown job "${job}".`);
   }

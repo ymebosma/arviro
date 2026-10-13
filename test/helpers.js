@@ -1,4 +1,5 @@
 // Shared test fixtures: a small library on disk, stand-ins for external programs, and a fake kiwix-serve.
+import childProcess from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -293,4 +294,40 @@ export async function startFakeKiwix() {
     requests,
     close: () => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }),
   };
+}
+
+/**
+ * A stand-in for download.kiwix.org's kiwix-tools release folder: a listing with archives for every platform,
+ * all served as the same tar.gz, in which kiwix-serve is a small script that prints its version.
+ */
+export function startFakeKiwixTools() {
+  const { spawnSync } = childProcess;
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), "arviro-kiwix-tools-"));
+  const folder = "kiwix-tools_linux-x86_64-3.10.0";
+  write(path.join(stage, folder, "kiwix-serve"), "#!/bin/sh\necho kiwix-serve fake 3.10.0\n", 0o755);
+  write(path.join(stage, folder, "kiwix-manage"), "#!/bin/sh\necho kiwix-manage fake\n", 0o755);
+  spawnSync("tar", ["-czf", path.join(stage, "archive.tar.gz"), "-C", stage, folder]);
+  const archive = fs.readFileSync(path.join(stage, "archive.tar.gz"));
+  write(path.join(stage, "empty", "readme.txt"), "nothing here\n");
+  spawnSync("tar", ["-czf", path.join(stage, "empty.tar.gz"), "-C", stage, "empty"]);
+  const empty = fs.readFileSync(path.join(stage, "empty.tar.gz"));
+  fs.rmSync(stage, { recursive: true, force: true });
+
+  const names = [
+    "kiwix-tools_linux-x86_64-3.7.0.tar.gz", "kiwix-tools_linux-x86_64-3.10.0.tar.gz", "kiwix-tools_linux-x86_64-3.9.1.tar.gz",
+    "kiwix-tools_linux-aarch64-3.10.0.tar.gz", "kiwix-tools_linux-armv6-3.10.0.tar.gz",
+    "kiwix-tools_macos-arm64-3.10.0.tar.gz", "kiwix-tools_macos-x86_64-3.10.0.tar.gz",
+    "kiwix-tools_win-i686-3.10.0.zip",
+  ];
+  const listing = `<html><body><h1>Index of /release/kiwix-tools/</h1><pre><a href="../">../</a>\n${names.map((name) => `<a href="${name}">${name}</a>  01-Oct-2026 10:00  12345678`).join("\n")}\n</pre></body></html>`;
+  const remote = { requests: [], serveEmpty: false, server: null, url: "", listing };
+  remote.server = http.createServer((req, res) => {
+    remote.requests.push(req.url);
+    if (req.url === "/release/kiwix-tools/") { res.writeHead(200, { "content-type": "text/html" }); return res.end(listing); }
+    if (/^\/release\/kiwix-tools\/kiwix-tools_.*\.tar\.gz$/.test(req.url)) { res.writeHead(200, { "content-type": "application/gzip" }); return res.end(remote.serveEmpty ? empty : archive); }
+    res.writeHead(404); res.end("not found");
+  });
+  remote.start = () => new Promise((resolve) => remote.server.listen(0, "127.0.0.1", () => { remote.url = `http://127.0.0.1:${remote.server.address().port}/release/kiwix-tools/`; resolve(); }));
+  remote.close = () => new Promise((resolve) => { remote.server.closeAllConnections(); remote.server.close(resolve); });
+  return remote;
 }

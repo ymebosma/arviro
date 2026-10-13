@@ -5,7 +5,7 @@ An MCP server that lets a local language model search and read an offline librar
 ## Commands
 
 - `npm test` runs all tests (`node --test`). Run it before every commit.
-- `node bin/arviro.js --help` lists the commands (`serve`, `stdio`, `index`, `search`, `read`, `status`, `doctor`, `library`).
+- `node bin/arviro.js --help` lists the commands (`serve`, `stdio`, `index`, `search`, `read`, `status`, `doctor`, `setup`, `service`, `library`).
 
 The tests are self-contained: they build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext (see `test/helpers.js`), and a stand-in for the Kiwix catalogue and the download servers (`test/library.test.js`). Nothing needs to be installed besides Node.js and the npm dependencies, and no test uses the network.
 
@@ -23,7 +23,7 @@ The tests are self-contained: they build a small library in a temporary folder a
 - `src/evidence.js`: the verdict for "who is X?" questions.
 - `src/guard.js`: protection against repeated tool calls.
 - `src/mcp.js`, `src/http.js`: the MCP tools, over stdio and stateless Streamable HTTP. `http.js` also serves the admin page and can swap in a new application after a configuration change.
-- `src/admin.js`: the admin page's JSON API and jobs (index, library update, model pull); `src/setup.js`: environment checks with platform advice (also `doctor`); `src/catalogue.js`: curated entries, Kiwix catalogue search, Geofabrik regions; `src/configfile.js`: editing the owner's config file; `src/chat.js`: the Chat tab, Ollama's `/api/chat` with the MCP tools through an in-memory client; `src/ui/`: the page (plain HTML, CSS and JS; nothing external, because the library is offline).
+- `src/admin.js`: the admin page's JSON API and jobs (index, library update, model pull, kiwix-tools); `src/setup.js`: environment checks with platform advice (also `doctor` and `setup`); `src/tools.js`: downloads kiwix-tools into the user's bin folder; `src/service.js`: `service install` for launchd, systemd and the Windows Startup folder; `install.sh` and `install.ps1`: the one-line installers (package manager, clone, `setup`, `service install`); `src/catalogue.js`: curated entries, Kiwix catalogue search, Geofabrik regions; `src/configfile.js`: editing the owner's config file; `src/chat.js`: the Chat tab, Ollama's `/api/chat` with the MCP tools through an in-memory client; `src/ui/`: the page (plain HTML, CSS and JS; nothing external, because the library is offline).
 - `src/text.js`: text helpers and the two error classes.
 
 ## Rules
