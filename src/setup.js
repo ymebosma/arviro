@@ -6,6 +6,13 @@ const OLLAMA_URL = "https://ollama.com/download";
 const KIWIX_URL = "https://download.kiwix.org/release/kiwix-tools/";
 const POPPLER_WINDOWS_URL = "https://github.com/oschwartz10612/poppler-windows/releases";
 
+/** The helper programs, with what each one is for; `arviro setup` reports on all of them. */
+export const HELPER_TOOLS = [
+  { id: "pdftotext", configKey: "pdftotext", purpose: "reads PDF files" },
+  { id: "kiwix-serve", configKey: "kiwixServe", purpose: "reads ZIM files" },
+  { id: "osmium", configKey: "osmium", purpose: "indexes map data" },
+];
+
 /** Installation advice per helper program and platform: { text, command?, url? }. */
 export function adviceFor(tool, platform = process.platform) {
   const mac = platform === "darwin";
@@ -20,7 +27,7 @@ export function adviceFor(tool, platform = process.platform) {
       if (windows) return { text: "Install Poppler for Windows and add its bin folder to PATH, or set tools.pdftotext.", url: POPPLER_WINDOWS_URL };
       return { text: "Install poppler-utils, which provides pdftotext.", command: "sudo apt install poppler-utils" };
     case "kiwix-serve":
-      return { text: "Download kiwix-tools and put kiwix-serve in your PATH (or in ~/.local/bin), or set tools.kiwixServe.", url: KIWIX_URL };
+      return { text: "Let Arviro download kiwix-tools, or download it yourself and put kiwix-serve in your PATH (or set tools.kiwixServe).", command: "arviro setup", url: KIWIX_URL };
     case "osmium":
       if (mac) return { text: "Install osmium-tool.", command: "brew install osmium-tool" };
       if (windows) return { text: "osmium-tool is available through conda-forge; without it, map data is not indexed.", command: "conda install -c conda-forge osmium-tool" };
@@ -28,6 +35,39 @@ export function adviceFor(tool, platform = process.platform) {
     default:
       return null;
   }
+}
+
+/** Pull a model through Ollama's streaming /api/pull. */
+export async function pullModel(embedding, line, fetchImpl = fetch) {
+  const response = await fetchImpl(`${embedding.url}/api/pull`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: embedding.model, stream: true }),
+  });
+  if (!response.ok) throw new Error(`Ollama answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  let buffered = "";
+  let lastStatus = "";
+  let nextPercent = 0;
+  for await (const chunk of response.body) {
+    buffered += Buffer.from(chunk).toString("utf8");
+    let newline;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const text = buffered.slice(0, newline).trim();
+      buffered = buffered.slice(newline + 1);
+      if (!text) continue;
+      const event = JSON.parse(text);
+      if (event.error) throw new Error(event.error);
+      if (event.total && event.completed != null) {
+        const percent = Math.floor(event.completed / event.total * 100);
+        if (percent >= nextPercent) { line(`${event.status}: ${percent}%`); nextPercent = percent + 10; }
+      } else if (event.status && event.status !== lastStatus) {
+        line(event.status);
+        lastStatus = event.status;
+        nextPercent = 0;
+      }
+    }
+  }
+  return { model: embedding.model };
 }
 
 /** Names of the models Ollama has, or null when it is not reachable. */
@@ -70,7 +110,7 @@ export async function checkEnvironment(config, status, { fetchImpl = fetch, plat
   }
 
   if (sources.some((source) => source.type === "documents")) check("pdftotext", "pdftotext (reads PDF files)", Boolean(config.tools.pdftotext), config.tools.pdftotext || "not found", config.tools.pdftotext ? {} : { advice: adviceFor("pdftotext", platform) });
-  if (config.kiwix.books.length || config.library.downloads.some((item) => item.kind === "zim")) check("kiwix-serve", "kiwix-serve (reads ZIM files)", Boolean(config.tools.kiwixServe), config.tools.kiwixServe || "not found", config.tools.kiwixServe ? {} : { advice: adviceFor("kiwix-serve", platform) });
+  if (config.kiwix.books.length || config.library.downloads.some((item) => item.kind === "zim")) check("kiwix-serve", "kiwix-serve (reads ZIM files)", Boolean(config.tools.kiwixServe), config.tools.kiwixServe || "not found", config.tools.kiwixServe ? {} : { advice: adviceFor("kiwix-serve", platform), fix: "kiwix-tools" });
   if (config.sources.maps) check("osmium", "osmium (indexes map data)", Boolean(config.tools.osmium), config.tools.osmium || "not found", config.tools.osmium ? {} : { advice: adviceFor("osmium", platform) });
 
   if (config.embedding.provider === "ollama") {

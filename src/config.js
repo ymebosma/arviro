@@ -6,7 +6,13 @@ import path from "node:path";
 export const DEFAULT_CONFIG_PATH = path.join(os.homedir(), ".config", "arviro", "config.json");
 const SOURCE_ID = /^[a-z][a-z0-9_-]{0,30}$/;
 const DEFAULT_EXCLUDES = [".git", "node_modules", "zim", "pmtiles", "vendor"];
-const EXTRA_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".local", "bin"), "/usr/bin", "/bin"];
+/** Where `arviro setup` puts helper programs it downloads itself (kiwix-serve): a folder of the user, no administrator needed. */
+export function userBinDir(platform = process.platform) {
+  if (platform === "win32") return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Arviro", "bin");
+  return path.join(os.homedir(), ".local", "bin");
+}
+
+const EXTRA_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", userBinDir(), "/usr/bin", "/bin"];
 
 // Dutch question words mapped to the English terms used in most reference documents.
 const DEFAULT_QUERY_EXPANSIONS = [

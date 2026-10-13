@@ -13,10 +13,11 @@ import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDown
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
 import { adviceFor, checkEnvironment, hasModel } from "../src/setup.js";
-import { makeFixture, startFakeDownloads, WIKIPEDIA_BOOK } from "./helpers.js";
+import { makeFixture, startFakeDownloads, startFakeKiwixTools, WIKIPEDIA_BOOK } from "./helpers.js";
 
 const fixture = makeFixture();
 const remote = startFakeDownloads();
+const kiwixTools = startFakeKiwixTools();
 const configPath = path.join(fixture.root, "admin-config.json");
 let server;
 let ollama;
@@ -103,11 +104,12 @@ function writeConfig(extra = {}) {
 async function startServer(serverOptions = {}, extra = {}) {
   writeConfig({ server: { port: 0, ...serverOptions }, ...extra });
   const arviro = createArviro(loadConfig(configPath), {});
-  return startHttpServer(arviro, { guard: createGuard(), version: "9.9.9", admin: { platform: "darwin" } });
+  return startHttpServer(arviro, { guard: createGuard(), version: "9.9.9", admin: { platform: "darwin", binDir: path.join(fixture.root, "user-bin"), kiwixToolsUrl: kiwixTools.url } });
 }
 
 before(async () => {
   await remote.start();
+  await kiwixTools.start();
   ollama = startFakeOllama();
   await ollama.start();
   server = await startServer();
@@ -115,6 +117,7 @@ before(async () => {
 after(async () => {
   await server.close();
   await remote.close();
+  await kiwixTools.close();
   ollama.node.close();
   ollama.node.closeAllConnections();
   fixture.cleanup();
@@ -175,6 +178,7 @@ test("the overview checks the environment and lists the library", async () => {
   assert.equal(byId.sources.ok, true);
   assert.equal(byId["kiwix-serve"].ok, false);
   assert.match(byId["kiwix-serve"].advice.url, /kiwix-tools/);
+  assert.equal(byId["kiwix-serve"].fix, "kiwix-tools");
   assert.equal(byId.pdftotext.ok, true);
   assert.equal(byId.embeddings.detail, "disabled; only literal matches are found");
   assert.equal(byId.index.ok, false);
@@ -337,6 +341,17 @@ test("with a token the admin API needs it, and the page can be switched off", as
     await off.close();
   }
   writeConfig();
+});
+
+test("the page can install kiwix-tools itself", async () => {
+  const started = await api("jobs", { method: "POST", body: { job: "kiwix-tools" } });
+  assert.equal(started.status, 202);
+  const job = await waitForJob();
+  assert.equal(job.status, "done", job.error);
+  assert.equal(job.result.version, "3.10.0");
+  assert.equal(job.result.file, path.join(fixture.root, "user-bin", "kiwix-serve"));
+  assert.ok(fs.existsSync(job.result.file));
+  assert.ok(job.lines.some((line) => /installed kiwix-serve 3\.10\.0/.test(line)), job.lines.join("\n"));
 });
 
 test("Ollama is checked and a missing model can be pulled from the page", async () => {

@@ -72,7 +72,7 @@ function renderChecks(checks) {
       detail.append(advice);
     }
     if (!check.ok && check.fix) {
-      const labels = { "ollama-pull": "Pull the model", index: "Build the index", "library-update": "Run the library update" };
+      const labels = { "ollama-pull": "Pull the model", index: "Build the index", "library-update": "Run the library update", "kiwix-tools": "Install kiwix-tools" };
       detail.append(el("div", { class: "advice" }, el("button", { class: "small", type: "button", onclick: () => startJob({ job: check.fix }) }, labels[check.fix] || "Fix")));
     }
     cells.push(detail);

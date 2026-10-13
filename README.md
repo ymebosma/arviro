@@ -37,9 +37,27 @@ Some things are built in because small local models need them:
   - `kiwix-serve` from [kiwix-tools](https://github.com/kiwix/kiwix-tools), for ZIM files;
   - `osmium` from [osmium-tool](https://osmcode.org/osmium-tool/), for map data.
 
-On macOS with Homebrew: `brew install node poppler osmium-tool`. Download kiwix-tools from [kiwix.org](https://kiwix.org/en/applications/) and put `kiwix-serve` in your PATH or in `~/.local/bin`.
+The install script below takes care of these. By hand, on macOS with Homebrew: `brew install node poppler osmium-tool ollama`; on Debian or Ubuntu: `sudo apt install poppler-utils osmium-tool` with Node.js from [nodejs.org](https://nodejs.org). `arviro setup` downloads kiwix-tools for you on every platform.
 
 ## Install
+
+One line, on macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ymebosma/arviro/main/install.sh | bash
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/ymebosma/arviro/main/install.ps1 | iex
+```
+
+The script installs Node.js and the helper programs with the package manager (Homebrew, apt, dnf, pacman or winget), puts the code in `~/arviro`, lets Arviro download kiwix-tools, starts the server now and at every login, and opens the admin page at <http://127.0.0.1:8765/admin/>. Run the same line again later to update. Read [`install.sh`](install.sh) or [`install.ps1`](install.ps1) first if you want to know what it does; `--no-tools` and `--no-service` skip the package manager and the service.
+
+The page shows what is installed and what is missing (with the command to install it, and a button where the page can do it itself), lets you add document folders, choose encyclopedias and maps from the catalogues in your language, download them, and build the search index. Nothing is downloaded until you choose it. The page writes `~/.config/arviro/config.json` for you; see [The admin page](#the-admin-page).
+
+### By hand
 
 Install [Node.js](https://nodejs.org) 22 or newer, then:
 
@@ -47,12 +65,13 @@ Install [Node.js](https://nodejs.org) 22 or newer, then:
 git clone https://github.com/ymebosma/arviro.git
 cd arviro
 npm install
-npm start
+node bin/arviro.js setup      # downloads kiwix-tools, pulls the embedding model when Ollama runs, and lists what is still missing
+npm start                     # starts the server; the first time, the admin page opens in your browser
 ```
 
-The server starts on <http://127.0.0.1:8765> and, the first time, opens its admin page at <http://127.0.0.1:8765/admin/> in your browser. The page shows what is installed and what is missing (with the command to install it, and a button where the page can do it itself), lets you add document folders, choose encyclopedias and maps from the catalogues in your language, download them, and build the search index. Nothing is downloaded until you choose it. The page writes `~/.config/arviro/config.json` for you; see [The admin page](#the-admin-page).
+`node bin/arviro.js service install` makes it start at every login; see [Run it as a service](#run-it-as-a-service).
 
-The same can be done by hand: copy `arviro.config.example.json` to `~/.config/arviro/config.json`, edit it so that it points at your own folders (see [Configuration](#configuration)), and run:
+Instead of the admin page, you can copy `arviro.config.example.json` to `~/.config/arviro/config.json`, edit it so that it points at your own folders (see [Configuration](#configuration)), and run:
 
 ```bash
 node bin/arviro.js doctor     # checks the configuration and the helper programs
@@ -229,19 +248,21 @@ arviro library verify             # recomputes the checksums of the files on dis
 
 After a download, `update` runs `arviro index` (switch that off with `--no-index` or `library.indexAfterUpdate`). A running `arviro serve` picks up the new index by itself, but it lists ZIM files when it starts: restart it after a new ZIM edition has arrived.
 
-To run the update on a schedule, use [`examples/launchd.library.plist`](examples/launchd.library.plist) on macOS (weekly, Sunday at 04:00) or a cron line on Linux:
+`arviro service install` runs the update every Sunday at 04:00 (see below). Without the service, a cron line on Linux does the same:
 
 ```
 0 4 * * 0  /usr/bin/node /path/to/arviro/bin/arviro.js library update >> ~/.local/share/arviro/library.log 2>&1
 ```
 
-## Run it as a service on macOS
-
-[`examples/launchd.plist`](examples/launchd.plist) is a LaunchAgent that starts Arviro at login and restarts it when it stops. Replace the paths in it, copy it to `~/Library/LaunchAgents/local.arviro.plist` and load it:
+## Run it as a service
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.arviro.plist
+arviro service install      # starts Arviro now and at every login, and runs the library update weekly
+arviro service status
+arviro service uninstall
 ```
+
+Everything is per user and needs no administrator: on macOS two LaunchAgents in `~/Library/LaunchAgents` (log in `~/Library/Logs/arviro.log`), on Linux a systemd user service and timer in `~/.config/systemd/user` (log with `journalctl --user -u arviro`; `loginctl enable-linger` keeps it running when you are not logged in), on Windows a hidden launcher in the Startup folder and a scheduled task (log in `%LOCALAPPDATA%\Arviro\arviro.log`). The service uses the configuration file the command was given, so `--config` works here too.
 
 ## Security
 
@@ -261,12 +282,12 @@ npm test
 
 The tests build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext, so none of those need to be installed.
 
-Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js`, `src/chat.js` and `src/ui/` are the admin page.
+Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js`, `src/chat.js` and `src/ui/` are the admin page; `src/tools.js` fetches kiwix-tools and `src/service.js` installs the service; `install.sh` and `install.ps1` are the installers.
 
 ## Not there yet
 
 - Map search only knows places and amenities that OpenStreetMap stores as a point. A hospital or shop drawn as a building outline is not found yet.
-- Packaged installers for macOS, Windows and Linux, and a client for phones.
+- Signed app bundles: the install scripts need git and a package manager. A client for phones.
 - Pages to view articles and maps in a browser, so answers can link to them.
 - A tool for the assistant's own notes and tasks.
 

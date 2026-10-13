@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 // Command line entry point: run the MCP server, build the index, or try a search by hand.
-import { spawn } from "node:child_process";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createArviro } from "../src/arviro.js";
-import { ConfigError, loadConfig } from "../src/config.js";
+import { ConfigError, loadConfig, userBinDir } from "../src/config.js";
 import { createEmbedder } from "../src/embeddings.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
 import { buildIndex } from "../src/indexer.js";
 import { createLibrary, formatLibraryRows, formatUpdate, formatVerify } from "../src/library.js";
 import { createMcpServer } from "../src/mcp.js";
-import { checkEnvironment } from "../src/setup.js";
-import { UserInputError } from "../src/text.js";
+import { installService, openInBrowser, serviceStatus, stableNodePath, uninstallService } from "../src/service.js";
+import { adviceFor, checkEnvironment, hasModel, HELPER_TOOLS, ollamaModels, pullModel } from "../src/setup.js";
+import { ServiceError, UserInputError } from "../src/text.js";
+import { installKiwixTools } from "../src/tools.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 const FLAGS = new Set(["public", "full", "force", "no-index", "no-open", "help", "version"]);
@@ -27,6 +29,10 @@ Usage: arviro <command> [options]
   read <source> <path> [offset] [limit]     read a search result further
   status                     show sources and index contents
   doctor                     check the installation
+  setup                      install what Arviro can install itself (kiwix-tools, the embedding model) and say what is left
+  service install            start Arviro at login and keep it running; run the library update weekly   [--no-open]
+  service uninstall          undo that
+  service status             show whether the service is installed
   library status             show the ZIM files and map extracts in the library and how old they are
   library check [name...]    ask the download servers whether newer editions exist
   library update [name...]   download new or newer editions, check their checksums and update the index
@@ -74,18 +80,6 @@ function closeOnExit(arviro, extra = async () => {}) {
   return shutdown;
 }
 
-/** Open a URL in the default browser, quietly; a machine without a browser just prints the URL. */
-function openInBrowser(url) {
-  const [command, args] = process.platform === "darwin" ? ["open", [url]]
-    : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
-      : ["xdg-open", [url]];
-  try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
-    child.on("error", () => {});
-    child.unref();
-  } catch {}
-}
-
 async function serve(config, options = {}) {
   const arviro = createArviro(config, { log });
   const guard = createGuard(config.guard);
@@ -129,6 +123,73 @@ async function doctor(config) {
   return problems ? 1 : 0;
 }
 
+/**
+ * `arviro setup`: install what needs no package manager (kiwix-tools in the user's bin folder, the embedding
+ * model through Ollama) and print the install command for the rest. Returns the exit code.
+ */
+async function setup(config) {
+  let problems = 0;
+  const problem = (label, text) => { problems += 1; print(`PROBLEM  ${label}: ${text}`); };
+  const adviceText = (advice) => `${advice.text}${advice.command ? `  ${advice.command}` : ""}${advice.url ? `  ${advice.url}` : ""}`;
+
+  if (config.tools.kiwixServe) print(`ok       kiwix-serve: ${config.tools.kiwixServe}`);
+  else {
+    try {
+      const result = await installKiwixTools({ binDir: userBinDir(), log });
+      print(`ok       kiwix-serve ${result.version}: ${result.file}`);
+    } catch (error) {
+      problem("kiwix-serve", `${error.message}  Run \`arviro setup\` again later, or download it yourself: ${adviceFor("kiwix-serve").url}`);
+    }
+  }
+  for (const tool of HELPER_TOOLS) {
+    if (tool.id === "kiwix-serve") continue;
+    if (config.tools[tool.configKey]) print(`ok       ${tool.id}: ${config.tools[tool.configKey]}`);
+    else problem(`${tool.id} (${tool.purpose})`, adviceText(adviceFor(tool.id)));
+  }
+
+  if (config.embedding.provider === "ollama") {
+    const names = await ollamaModels(config.embedding.url);
+    if (names === null) problem("Ollama", `not reachable at ${config.embedding.url}. ${adviceText(adviceFor("ollama"))}`);
+    else if (hasModel(names, config.embedding.model)) print(`ok       embedding model: ${config.embedding.model}`);
+    else {
+      try {
+        await pullModel(config.embedding, log);
+        print(`ok       embedding model: ${config.embedding.model} (pulled)`);
+      } catch (error) {
+        problem("embedding model", `${config.embedding.model} could not be pulled (${error.message}).  ollama pull ${config.embedding.model}`);
+      }
+    }
+  }
+
+  print(problems ? `\n${problems} thing(s) to do by hand; the admin page shows them too.` : "\nEverything Arviro needs is there.");
+  print(config.missing ? "Next: `arviro serve` opens the admin page, where you add folders and choose encyclopedias and maps." : "Next: `arviro doctor` for the full check, or `arviro serve`.");
+  return problems ? 1 : 0;
+}
+
+/** `arviro service <install|uninstall|status>`: start at login, on this platform. Returns the exit code. */
+async function service(config, rest, options) {
+  const [action = "status"] = rest;
+  const target = { nodePath: stableNodePath(), scriptPath: fileURLToPath(import.meta.url), configPath: config.configPath };
+  let lines;
+  if (action === "install") lines = await installService(target);
+  else if (action === "uninstall") lines = uninstallService(target);
+  else if (action === "status") lines = serviceStatus(target);
+  else throw new UserInputError(`Unknown service command "${action}". Use: service install, uninstall or status.`);
+  for (const line of lines) print(line);
+  if (action === "install") {
+    const url = `http://${config.server.host}:${config.server.port}`;
+    print(`admin page: ${url}/admin/`);
+    // The service is starting; give it a moment before opening the page.
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      try { if ((await fetch(url, { signal: AbortSignal.timeout(1000) })).ok) break; } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (config.server.admin && !options["no-open"]) openInBrowser(`${url}/admin/`);
+  }
+  return 0;
+}
+
 /** Library management: `arviro library <status|check|update|verify> [name...]`. Returns the exit code. */
 async function library(config, rest, options) {
   const [action = "status", ...names] = rest;
@@ -164,11 +225,13 @@ async function main() {
   if (!command || options.help || command === "help") return print(USAGE);
 
   // The server starts without a configuration file, so that the admin page can create one.
-  const config = loadConfig(options.config, { allowMissing: command === "serve" });
+  const config = loadConfig(options.config, { allowMissing: ["serve", "setup", "service"].includes(command) });
   const scope = options.public ? "public" : "all";
   if (command === "serve") return serve(config, options);
   if (command === "stdio") return stdio(config, options);
   if (command === "doctor") { process.exitCode = await doctor(config); return; }
+  if (command === "setup") { process.exitCode = await setup(config); return; }
+  if (command === "service") { process.exitCode = await service(config, rest, options); return; }
   if (command === "library") { process.exitCode = await library(config, rest, options); return; }
   if (command === "index") {
     const summary = await buildIndex(config, createEmbedder(config.embedding), { log, full: Boolean(options.full) });
@@ -195,7 +258,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  if (error instanceof ConfigError || error instanceof UserInputError) process.stderr.write(`${error.message}\n`);
-  else process.stderr.write(`${error.stack || error}\n`);
-  process.exit(error instanceof ConfigError || error instanceof UserInputError ? 2 : 1);
+  const expected = error instanceof ConfigError || error instanceof UserInputError || error instanceof ServiceError;
+  process.stderr.write(`${expected ? error.message : error.stack || error}\n`);
+  process.exit(error instanceof ServiceError ? 1 : expected ? 2 : 1);
 });
