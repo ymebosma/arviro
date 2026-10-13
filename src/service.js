@@ -52,7 +52,7 @@ const windowsCommand = (parts) => parts.map((part) => (/[\s"]/.test(part) ? `"${
  * The files the service consists of on a platform, with their contents.
  * @returns {{ files: {path: string, content: string}[], logHint: string, lingerHint?: string }}
  */
-export function serviceFiles({ platform = process.platform, nodePath, scriptPath, configPath, home = os.homedir(), appData = process.env.APPDATA, localAppData = process.env.LOCALAPPDATA }) {
+export function serviceFiles({ platform = process.platform, nodePath, scriptPath, configPath, home = os.homedir(), appData = process.env.APPDATA, localAppData = process.env.LOCALAPPDATA, xdgConfigHome = process.env.XDG_CONFIG_HOME }) {
   const serve = [nodePath, scriptPath, "serve", "--no-open", "--config", configPath];
   const update = [nodePath, scriptPath, "library", "update", "--config", configPath];
 
@@ -99,7 +99,7 @@ export function serviceFiles({ platform = process.platform, nodePath, scriptPath
     };
   }
 
-  const units = path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "systemd", "user");
+  const units = path.join(xdgConfigHome || path.join(home, ".config"), "systemd", "user");
   return {
     files: [
       { path: path.join(units, "arviro.service"), content: `# Written by \`arviro service install\`; \`arviro service uninstall\` removes it.

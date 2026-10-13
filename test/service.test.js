@@ -17,6 +17,8 @@ const target = (platform) => ({
   home,
   appData: path.join(home, "Roaming"),
   localAppData: path.join(home, "Local"),
+  // The test's home decides where the files go, not this machine's environment (CI sets XDG_CONFIG_HOME).
+  xdgConfigHome: "",
 });
 
 /** A stand-in for running commands: records them, fails the ones in `failing`. */
