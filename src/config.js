@@ -279,6 +279,8 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     url: chatInput.url ? String(chatInput.url).replace(/\/+$/, "") : null,
     // A file with the system prompt; the default is examples/system-prompt.en.md in the package.
     systemPrompt: chatInput.systemPrompt ? resolvePath(chatInput.systemPrompt, baseDir) : null,
+    // What the assistant calls itself in the prompt ({{assistantName}}); Arviro is the name of the software, not of the assistant.
+    assistantName: String(chatInput.assistantName || "the assistant").trim().slice(0, 80) || "the assistant",
     numCtx: Number(chatInput.numCtx ?? 16_384),
     // Tokens the model may generate per answer (thinking included), and how long one answer may take.
     numPredict: Number(chatInput.numPredict ?? 8192),

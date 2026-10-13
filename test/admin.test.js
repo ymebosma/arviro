@@ -3,10 +3,12 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import test, { after, before } from "node:test";
+import { fileURLToPath } from "node:url";
 import { createArviro } from "../src/arviro.js";
 import { listFolders } from "../src/admin.js";
 import { CURATED, parseCatalogueFeed, parseGeofabrikIndex, regionIdFor } from "../src/catalogue.js";
-import { loadConfig } from "../src/config.js";
+import { fillAssistantName } from "../src/chat.js";
+import { loadConfig, normalizeConfig } from "../src/config.js";
 import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDownload, setDocumentSource, writeRawConfig } from "../src/configfile.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
@@ -353,8 +355,8 @@ test("Ollama is checked and a missing model can be pulled from the page", async 
 });
 
 test("the chat answers with the library tools through Ollama", async () => {
-  fs.writeFileSync(path.join(fixture.root, "prompt.md"), "You are the test assistant.\n");
-  const other = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", systemPrompt: path.join(fixture.root, "prompt.md") } });
+  fs.writeFileSync(path.join(fixture.root, "prompt.md"), "You are {{assistantName}}, the test assistant. Sign as {{assistantName}}.\n");
+  const other = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", systemPrompt: path.join(fixture.root, "prompt.md"), assistantName: "Bieb" } });
   try {
     const models = await api("chat/models", { base: other.url });
     assert.deepEqual(models.body.models, ["chatty:latest"], "embedding models are left out");
@@ -382,7 +384,7 @@ test("the chat answers with the library tools through Ollama", async () => {
     // What Ollama was sent: the system prompt from the file, the tools with their MCP descriptions, and the tool result.
     assert.equal(ollama.chats.length, 2);
     assert.equal(ollama.chats[0].messages[0].role, "system");
-    assert.equal(ollama.chats[0].messages[0].content, "You are the test assistant.");
+    assert.equal(ollama.chats[0].messages[0].content, "You are Bieb, the test assistant. Sign as Bieb.", "the assistant's name is filled in everywhere");
     assert.deepEqual(ollama.chats[0].tools.map((tool) => tool.function.name), ["search_library", "read_document"]);
     assert.deepEqual(ollama.chats[0].tools[0].function.parameters.properties.source.enum, ["library", "wiki", "wikipedia", "wikivoyage", "maps"]);
     assert.equal(ollama.chats[0].options.num_ctx, 16_384);
@@ -439,6 +441,18 @@ test("a model that thinks for too long is cut off, and thinking can be switched 
   }
   writeConfig();
 }, { timeout: 30_000 });
+
+test("the assistant's name is a setting, not the product name", () => {
+  assert.equal(fillAssistantName("You are {{assistantName}}.", "Bieb"), "You are Bieb.");
+  assert.equal(fillAssistantName("{{assistantName}} and {{assistantName}}", "$&"), "$& and $&", "the name is plain text");
+  assert.equal(loadConfig(configPath).chat.assistantName, "the assistant");
+  assert.equal(normalizeConfig({ chat: { assistantName: "  Bieb  " } }).chat.assistantName, "Bieb");
+  for (const language of ["en", "nl"]) {
+    const prompt = fs.readFileSync(fileURLToPath(new URL(`../examples/system-prompt.${language}.md`, import.meta.url)), "utf8");
+    assert.match(prompt, /\{\{assistantName\}\}/);
+    assert.doesNotMatch(prompt.split("\n")[0], /Arviro/, "the first line names the assistant, not the software");
+  }
+});
 
 test("environment checks give platform advice", async () => {
   const config = loadConfig(configPath);

@@ -21,6 +21,11 @@ export async function listChatModels(url, fetchImpl = fetch) {
   return models.filter((name) => !EMBEDDING_HINT.test(name));
 }
 
+/** Replace every `{{assistantName}}` in a prompt; the name is plain text, so nothing in it is interpreted. */
+export function fillAssistantName(text, name) {
+  return String(text).split("{{assistantName}}").join(name);
+}
+
 /** The conversation as the page sends it: only the roles and fields the model may see. */
 function cleanHistory(messages) {
   if (!Array.isArray(messages)) throw new UserInputError("messages must be a list.");
@@ -59,10 +64,13 @@ async function* ndjson(body) {
  * @param {object} options.guard   the repeat guard shared with the HTTP endpoints
  */
 export function createChat({ getArviro, guard, version, log = () => {}, fetchImpl = fetch }) {
+  /** The system prompt with the assistant's name filled in: Arviro is the software, the assistant has its own name. */
   function systemPrompt(config) {
     const file = config.chat.systemPrompt || DEFAULT_PROMPT_FILE;
-    try { return fs.readFileSync(file, "utf8").trim(); }
+    let text;
+    try { text = fs.readFileSync(file, "utf8").trim(); }
     catch (error) { throw new Error(`The system prompt file cannot be read (${error.code || error.message}); check chat.systemPrompt.`); }
+    return fillAssistantName(text, config.chat.assistantName);
   }
 
   /** An MCP client connected to a fresh in-memory server for this conversation turn. */

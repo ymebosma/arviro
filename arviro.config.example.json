@@ -45,7 +45,8 @@
   },
   "chat": {
     "model": "",
-    "systemPrompt": ""
+    "systemPrompt": "",
+    "assistantName": "the assistant"
   },
   "server": {
     "host": "127.0.0.1",

@@ -79,7 +79,7 @@ node bin/arviro.js read library manuals/water.md
 
 - **Environment**: the checks of `arviro doctor`, with the command to install what is missing on your platform. The page itself can pull the embedding model through Ollama and build the index.
 - **Library**: your document folders (with a folder browser), the download list with what is on disk and how old it is, buttons to check for updates and to update, and a search in the Kiwix catalogue and Geofabrik's region list to add encyclopedias and maps. A few common choices are shown before you search.
-- **Chat**: a conversation with a model from Ollama that uses the library, so Arviro works without any other chat app. The model gets the same two tools and the same system prompt (`examples/system-prompt.en.md`) a chat app would; each search and read is shown in the conversation, with its result. Choose a model that can call tools, such as `qwen3` or `llama3.1`.
+- **Chat**: a conversation with a model from Ollama that uses the library, so Arviro works without any other chat app. The model gets the same two tools and the same system prompt (`examples/system-prompt.en.md`, with `chat.assistantName` filled in) a chat app would; each search and read is shown in the conversation, with its result. Choose a model that can call tools, such as `qwen3` or `llama3.1`.
 - **Connect**: the URLs and tokens a chat app needs, and the steps for Open WebUI.
 
 Changes are written to the configuration file (relative to `~` where possible) and take effect at once; only `server.*` settings need a restart. Jobs such as an index build run one at a time in the server, with their log on the page. The MCP endpoints do not change: `/admin/` is not a tool, and the model cannot reach it.
@@ -96,7 +96,7 @@ Open WebUI (0.6.31 or newer) connects to MCP servers over Streamable HTTP, which
    - ID: `arviro`
 
    With **Access Control** you decide which users may use the connection. To give yourself all sources and others only the public ones, add two connections with different IDs.
-3. In a chat, switch the tool on with the integrations button under the message box. To have it on by default, create a model under **Workspace → Models**: choose your Ollama model as base, paste a system prompt (see [`examples/`](examples/)), and tick the Arviro tool server. Leave function calling on **Native**.
+3. In a chat, switch the tool on with the integrations button under the message box. To have it on by default, create a model under **Workspace → Models**: choose your Ollama model as base, paste a system prompt (see [`examples/`](examples/); replace `{{assistantName}}` by the name you give the assistant), and tick the Arviro tool server. Leave function calling on **Native**. A model per name, each with its own prompt and access per user or group, gives every user their own assistant on the same library.
 
 Open WebUI puts the connection ID in front of the tool names, so with the ID `arviro` the model sees `arviro_search_library` and `arviro_read_document`. It calls its MCP support experimental; this setup was tested with Open WebUI 0.11.4.
 
@@ -178,6 +178,7 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `chat.model` | The model for the Chat tab; by default the first chat model Ollama has. |
 | `chat.url` | Ollama for the chat, when it is not the one of `embedding.url`. |
 | `chat.systemPrompt` | A file with the system prompt. Default `examples/system-prompt.en.md`; `examples/system-prompt.nl.md` is the Dutch one. |
+| `chat.assistantName` | What the assistant calls itself; the prompt's `{{assistantName}}` is replaced by it. Default `the assistant`. Arviro is the name of the software, so give the assistant a name of its own here, or write your own prompt file. In Open WebUI, a name per user is a model preset per name (**Workspace → Models**, with its own system prompt and access per user or group). |
 | `chat.numCtx`, `.maxRounds` | Context size for the chat (default 16384) and how often the model may call tools in one turn (default 6). |
 | `chat.numPredict`, `.timeoutSeconds` | How many tokens the model may generate per answer, thinking included (default 8192), and how long one answer may take (default 600 seconds). A model that keeps thinking blocks every other Ollama request, so a limit matters. |
 | `chat.think` | `false` switches thinking off for models that can think (`qwen3` and the like); `true` switches it on. Unset leaves it to the model; its thinking is shown dimmed in the chat. With the library tools, thinking off is often the better setting: answers come faster, and a model that loops in its thinking runs out of room before it answers. |
