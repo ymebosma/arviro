@@ -11,6 +11,22 @@ export const STOPWORDS = new Set(`${STOPWORDS_NL} ${STOPWORDS_EN}`.split(/\s+/))
 /** An error caused by the caller's input; its message is safe and useful to show to the model. */
 const LANGUAGE_NAMES = { en: "English", nl: "Dutch", de: "German", fr: "French", es: "Spanish", it: "Italian", pt: "Portuguese", ar: "Arabic", zh: "Chinese", ru: "Russian", ja: "Japanese", tr: "Turkish", pl: "Polish", sv: "Swedish", da: "Danish", nb: "Norwegian", fi: "Finnish", id: "Indonesian", hi: "Hindi", uk: "Ukrainian" };
 
+const DUTCH_WORDS = new Set(["de", "het", "een", "van", "bij", "zijn", "wat", "hoe", "niet", "met", "voor", "op", "en", "te", "ook", "naar", "om", "dat", "die", "wordt", "welke", "waar", "wanneer", "ik", "je", "mijn", "kan", "moet", "als", "over", "door", "uit", "naar", "nog", "wel", "geen"]);
+const ENGLISH_WORDS = new Set(["the", "of", "and", "to", "in", "is", "a", "an", "for", "with", "what", "how", "are", "on", "that", "this", "by", "from", "can", "should", "my", "when", "where", "which", "do", "does", "not", "or", "be", "it"]);
+
+/** A rough guess of the language of a short text, "nl" or "en", by its function words; null when it cannot tell. */
+export function guessLanguage(text) {
+  let dutch = 0;
+  let english = 0;
+  for (const word of String(text).toLowerCase().split(/[^\p{L}']+/u)) {
+    if (DUTCH_WORDS.has(word)) dutch += 1;
+    else if (ENGLISH_WORDS.has(word)) english += 1;
+  }
+  if (dutch >= 2 && dutch > english) return "nl";
+  if (english >= 2 && english > dutch) return "en";
+  return null;
+}
+
 /** The English name of a language code ("en" is "English"); an unknown code is given as it is. */
 export function languageName(code) {
   return LANGUAGE_NAMES[String(code || "").toLowerCase()] || String(code || "");

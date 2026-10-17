@@ -57,7 +57,13 @@ test("an English book gets the Dutch-to-English expansions, says its language, a
     const found = await english.search({ source: "mdwiki", query: "eerste hulp bij uitdroging" });
     assert.deepEqual(found.results.map((hit) => hit.title), ["Dehydration"]);
     assert.ok(fake.requests.some((line) => line.includes("pattern=") && /first/.test(decodeURIComponent(line))), fake.requests.join("\n"));
-    assert.equal(found.warnings, undefined);
+    assert.equal(found.warnings, undefined, "a question whose language cannot be told gets no warning");
+    // A plainly Dutch question to an English book finds something (noise, mostly) and is told to search in English.
+    const dutchQuestion = await english.search({ source: "mdwiki", query: "wat zijn de tekenen van uitdroging bij kinderen" });
+    assert.deepEqual(dutchQuestion.warnings, ["This source is in English; search again with English words."]);
+    const englishQuestion = await arviro.search({ source: "wikipedia", query: "where is the cheese market of Gouda" });
+    assert.deepEqual(englishQuestion.results.map((hit) => hit.title), ["Gouda"]);
+    assert.deepEqual(englishQuestion.warnings, ["This source is in Dutch; search again with Dutch words."]);
     const nothing = await english.search({ source: "mdwiki", query: "waar is de kaasmarkt" });
     assert.deepEqual(nothing.results, []);
     assert.deepEqual(nothing.warnings, ["This source is in English; search again with English words."]);

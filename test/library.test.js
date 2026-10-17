@@ -266,9 +266,31 @@ test("file downloads keep documents from the web inside a document source and up
   assert.equal(fs.readFileSync(path.join(fixture.library, "web", "pinned.pdf"), "utf8"), "%PDF-1.4 pinned edition");
   assert.equal(library.status()[0].edition, "2026-10-01");
 
-  // A file the owner downloaded by hand earlier: its own date is compared with the server's, and a changed copy is noticed by verify.
-  fs.appendFileSync(path.join(fixture.library, "web", "part-01.pdf"), "!");
+  // The server that breaks on HEAD was checked through a GET of the first byte.
+  assert.ok(remote.requests.includes("HEAD /docs/pinned.pdf") && remote.requests.includes("GET /docs/pinned.pdf"), remote.requests.join("\n"));
+
+  // A damaged or replaced copy is noticed by verify, by check, and repaired by a plain update.
+  const partOne = path.join(fixture.library, "web", "part-01.pdf");
+  fs.appendFileSync(partOne, "!");
   assert.deepEqual((await library.verify(["library/web/part-01.pdf"])).map((row) => row.status), ["mismatch"]);
+  assert.equal(library.status()[1].verifiedAt, null, "a failed verification is not shown as verified");
+  const damaged = await library.check(["library/web/part-01.pdf"]);
+  assert.equal(damaged[0].verdict, "damaged");
+  assert.match(formatLibraryRows(damaged), /DAMAGED: the file differs/);
+  fs.appendFileSync(path.join(fixture.library, "web", "pinned.pdf"), "!");
+  assert.equal((await library.check(["library/web/pinned.pdf"]))[0].verdict, "newer", "a pinned file that lost its hash is fetched again");
+  // The server offers the newer, unwanted edition: the download does not match the pin and is discarded.
+  assert.equal((await library.update(["library/web/pinned.pdf"])).items[0].action, "failed");
+  remote.docs["/docs/pinned.pdf"] = { bytes: Buffer.from("%PDF-1.4 pinned edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"pinned-1"', headFails: true };
+  const repaired = await library.update(["library/web/part-01.pdf", "library/web/pinned.pdf"]);
+  assert.deepEqual(repaired.items.map((row) => row.action), ["downloaded", "downloaded"]);
+  assert.equal(fs.readFileSync(partOne, "utf8"), "%PDF-1.4 part one");
+  assert.deepEqual((await library.verify(["library/web/part-01.pdf"])).map((row) => row.status), ["ok"]);
+
+  // Before its first download a pinned file says so, instead of "checksum unknown".
+  const fresh = createLibrary(makeConfig({ downloads: [{ file: "web/other.pdf", url: `${remote.url}/docs/guide.pdf`, source: "library", checksum: `sha256:${"cd".repeat(32)}` }] }), quiet);
+  fs.writeFileSync(path.join(fixture.library, "web", "other.pdf"), "by hand");
+  assert.match(formatLibraryRows(fresh.status()), /other\.pdf +file +other\.pdf .* checksum pinned, not yet verified/);
   fs.rmSync(path.join(fixture.library, "web"), { recursive: true, force: true });
 });
 

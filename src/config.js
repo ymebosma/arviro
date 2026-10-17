@@ -309,6 +309,9 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
   const books = zimDir ? discoverBooks(zimDir) : [];
   const kiwixDescriptions = asObject(kiwixInput.descriptions, "kiwix.descriptions");
   const privateBooks = new Set((kiwixInput.private || []).map(String));
+  // Keys that name no ZIM source (a book that is gone, or an id that changed when another book arrived): doctor warns about them.
+  const bookIds = new Set(books.map((book) => book.sourceId));
+  const staleKiwixKeys = [...new Set([...Object.keys(kiwixDescriptions), ...privateBooks])].filter((key) => !bookIds.has(key)).sort();
   for (const book of books) {
     if (!SOURCE_ID.test(book.sourceId)) throw new ConfigError(`Cannot derive a source id from ZIM file "${book.name}.zim".`);
     const existing = sources[book.sourceId];
@@ -422,6 +425,7 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
       urlRoot: "/kiwix",
       zimDir,
       books,
+      staleKeys: staleKiwixKeys,
     },
     library: libraryConfig(asObject(input.library, "library"), { zimDir, regions, dataDir, sources }),
     embedding,

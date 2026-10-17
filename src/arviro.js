@@ -9,7 +9,7 @@ import { createKiwix } from "./kiwix.js";
 import { TOOL_READ } from "./names.js";
 import { createOsmSearch } from "./osm.js";
 import { readDocument } from "./reader.js";
-import { languageName, normalizeComparable, normalizePathPrefix, ServiceError, UserInputError } from "./text.js";
+import { guessLanguage, languageName, normalizeComparable, normalizePathPrefix, ServiceError, UserInputError } from "./text.js";
 
 const POLICY = Object.freeze({
   found: `These results are locations, not answers. If the excerpt is not enough, read only the single most relevant result with ${TOOL_READ}, passing its \`read\` arguments unchanged.`,
@@ -156,7 +156,9 @@ export function createArviro(config, { embedder = createEmbedder(config.embeddin
       }
     }
     const results = found.results.map((item) => ({ title: item.title, snippet: item.snippet, read: { source: source.id, path: item.link } }));
-    if (!results.length && source.language) warnings.push(`This source is in ${languageName(source.language)}; search again with ${languageName(source.language)} words.`);
+    // A question in another language than the book finds noise or nothing: say so, whether or not something came back.
+    const asked = guessLanguage(query);
+    if (source.language && (!results.length || (asked && asked !== source.language))) warnings.push(`This source is in ${languageName(source.language)}; search again with ${languageName(source.language)} words.`);
     return { results, evidence, policy: results.length ? POLICY.found : POLICY.none };
   }
 

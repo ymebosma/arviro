@@ -49,6 +49,13 @@ test("ZIM series that share a first name part get distinct source ids", async ()
   const checks = await checkEnvironment(config, { index: { exists: false }, sources: [] }, { platform: "linux" });
   assert.match(checks.find((check) => check.id === "source:wikipedia_en_medicine").detail, /named "wikipedia_en_medicine" because wikipedia_nl_all_nopic also starts with "wikipedia".*kiwix\.descriptions/);
   assert.doesNotMatch(checks.find((check) => check.id === "source:wikivoyage").detail, /because/);
+  assert.equal(checks.find((check) => check.id === "kiwix-keys"), undefined);
+  // A key that no source covers any more (the id changed when the second book arrived) is a warning, not a silent fallback.
+  const stale = normalizeConfig({ kiwix: { zimDir, descriptions: { wikipedia: "Wikipedia" }, private: ["wikivoyage", "gone"] } });
+  assert.deepEqual(stale.kiwix.staleKeys, ["gone", "wikipedia"]);
+  const staleCheck = (await checkEnvironment(stale, { index: { exists: false }, sources: [] }, { platform: "linux" })).find((check) => check.id === "kiwix-keys");
+  assert.equal(staleCheck.ok, false);
+  assert.match(staleCheck.detail, /name gone, wikipedia, which is not a ZIM source \(the sources are wikipedia_en_medicine, wikipedia_nl_all, wikivoyage\)/);
 });
 
 test("normalizeConfig derives sources for documents, ZIM books and maps", () => {

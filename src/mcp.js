@@ -68,7 +68,7 @@ export function createMcpServer(arviro, { scope = "all", guard, sessionKey = sco
       "and say that you cannot confirm it when it is `not_found` or `unavailable`.",
     ].join(" "),
     inputSchema: {
-      query: z.string().min(2).max(500).describe("The user's full question in their own words. Do not add guessed terms. Translate it only for a source that is in another language than the question (the source list says which)."),
+      query: z.string().min(2).max(500).describe("The user's full question in their own words. Do not add guessed terms. A source marked \"(in English)\" or another language is searched in that language from the first call: translate the question for it."),
       source: z.enum(allIds).describe(`The one source that fits the question:\n${sourceList}`),
       pathPrefix: blank(z.string().max(240).optional()).describe("Optional folder filter for document sources, for example \"manuals/first-aid\". Only use a folder the user named or one that appeared in an earlier result."),
       // The bounds are wide on purpose: a model that asks for too much gets the maximum, not an error.

@@ -112,6 +112,10 @@ export async function checkEnvironment(config, status, { fetchImpl = fetch, plat
     }
   }
 
+  if (config.kiwix.staleKeys?.length) {
+    const ids = sources.filter((source) => source.type === "kiwix").map((source) => source.id);
+    check("kiwix-keys", "kiwix settings", false, `kiwix.descriptions or kiwix.private name ${config.kiwix.staleKeys.join(", ")}, which is not a ZIM source${ids.length ? ` (the sources are ${ids.join(", ")})` : ""}`, { advice: { text: "Rename or remove those keys in the configuration file; a source id changes when another book with the same first name part arrives." } });
+  }
   if (sources.some((source) => source.type === "documents")) check("pdftotext", "pdftotext (reads PDF files)", Boolean(config.tools.pdftotext), config.tools.pdftotext || "not found", config.tools.pdftotext ? {} : { advice: adviceFor("pdftotext", platform) });
   if (config.kiwix.books.length || config.library.downloads.some((item) => item.kind === "zim")) check("kiwix-serve", "kiwix-serve (reads ZIM files)", Boolean(config.tools.kiwixServe), config.tools.kiwixServe || "not found", config.tools.kiwixServe ? {} : { advice: adviceFor("kiwix-serve", platform), fix: "kiwix-tools" });
   if (config.sources.maps) check("osmium", "osmium (indexes map data)", Boolean(config.tools.osmium), config.tools.osmium || "not found", config.tools.osmium ? {} : { advice: adviceFor("osmium", platform) });

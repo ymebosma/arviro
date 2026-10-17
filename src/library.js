@@ -218,7 +218,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     const edition = item.kind === "zim" ? zimEdition(facts.file || "") : day(facts.remoteModified || facts.modifiedAt);
     const since = item.kind === "zim" ? (edition ? Date.parse(`${edition.length === 7 ? `${edition}-01` : edition}T00:00:00Z`) : NaN) : Date.parse(facts.remoteModified || facts.modifiedAt || "");
     const ageDays = facts.exists && Number.isFinite(since) ? Math.max(0, (now().getTime() - since) / DAY_MS) : null;
-    return { id: item.id, kind: item.kind, managed, ...facts, edition, ageDays, ...(item.kind === "file" ? { source: item.source, relative: item.relative, url: item.url, note: item.note } : {}) };
+    return { id: item.id, kind: item.kind, managed, ...facts, edition, ageDays, ...(item.kind === "file" ? { source: item.source, relative: item.relative, url: item.url, note: item.note, pinned: Boolean(item.checksumHex) } : {}) };
   }
 
   /** What is in the library now, without touching the network. Files that are not in the download list are listed too. */
@@ -270,7 +270,9 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
   async function remoteHead(item) {
     const headers = { "user-agent": USER_AGENT };
     let response = await fetchImpl(item.url, { method: "HEAD", headers, redirect: "follow", signal: AbortSignal.timeout(SMALL_TIMEOUT_MS) });
-    if ([405, 501].includes(response.status)) {
+    // Some servers refuse or break on HEAD (405, 501, or a 500 from a repository): a GET of the first byte says the same.
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
       response = await fetchImpl(item.url, { headers: { ...headers, range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(SMALL_TIMEOUT_MS) });
     }
     await response.body?.cancel().catch(() => {});
@@ -287,12 +289,15 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     const row = describe(item, state);
     const remote = item.kind === "zim" ? await remoteZim(item) : await remoteHead(item);
     let verdict;
+    // A document whose checksum is known (pinned, or recorded at download time) is hashed: a damaged or replaced copy is downloaded again.
+    const expectedLocal = item.kind === "file" && row.exists ? item.checksumHex || (row.checksum ? { algorithm: row.checksum.split(":")[0], hex: row.checksum.split(":")[1] } : null) : null;
+    const localHash = expectedLocal ? await hashOf(localFileOf(item), expectedLocal.algorithm) : null;
     if (!row.exists) verdict = "missing";
+    else if (expectedLocal && localHash !== expectedLocal.hex) verdict = item.checksumHex ? "newer" : "damaged";
     else if (item.kind === "zim") verdict = remote.file.slice(0, -4) > row.file.slice(0, -4) ? "newer" : "current";
     else if (item.checksumHex) {
-      // A pinned checksum: the file is current as long as it has that hash, whatever the server says.
-      const actual = row.checksum?.split(":")[1] || await hashOf(localFileOf(item), item.checksumHex.algorithm);
-      verdict = actual === item.checksumHex.hex ? "current" : "newer";
+      // A pinned checksum: the file has that hash (checked above), so it is current whatever the server says.
+      verdict = "current";
     } else if (row.checksum && item.checksum) {
       const expected = await fetchChecksum(item.checksum, remote.file);
       verdict = `${expected.algorithm}:${expected.hex}` === row.checksum ? "current" : "newer";
@@ -499,6 +504,9 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
         saveState(state);
         rows.push({ ...row, status: "ok" });
       } else {
+        // The checksum no longer holds; the status must not claim a verification that is undone.
+        entry.verifiedAt = null;
+        saveState(state);
         rows.push({ ...row, status: "mismatch" });
       }
     }
@@ -522,13 +530,14 @@ export function formatLibraryRows(rows) {
       parts.push(row.kind === "zim" ? `edition ${row.edition || "?"}` : `dated ${row.edition || "?"}`);
       parts.push(formatAge(row.ageDays));
       if (row.downloadedAt) parts.push(`downloaded ${day(row.downloadedAt)}`);
-      parts.push(row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : "checksum unknown");
+      parts.push(row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : row.pinned ? "checksum pinned, not yet verified" : "checksum unknown");
     }
     if (row.managed === false) parts.push("not in library.downloads");
     if (row.note) parts.push(`(${row.note})`);
     if (row.verdict === "newer") parts.push(`NEWER: ${row.remote.file}${row.remote.bytes ? ` (${formatBytes(row.remote.bytes)})` : ""}${row.kind === "map" && row.remote.modifiedAt ? ` dated ${day(row.remote.modifiedAt)}` : ""}`);
     else if (row.verdict === "missing") parts.push(`AVAILABLE: ${row.remote.file}${row.remote.bytes ? ` (${formatBytes(row.remote.bytes)})` : ""}`);
     else if (row.verdict === "current") parts.push("up to date");
+    else if (row.verdict === "damaged") parts.push("DAMAGED: the file differs from what was downloaded; update downloads it again");
     else if (row.verdict === "unknown") parts.push("cannot tell whether a newer version exists; use --force");
     else if (row.verdict === "error") parts.push(`ERROR: ${row.error}`);
     return parts.join("  ");

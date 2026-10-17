@@ -96,6 +96,7 @@ function verdictOf(check) {
   const remote = check.remote ? `${check.remote.file}${check.remote.bytes ? ` (${bytes(check.remote.bytes)})` : ""}${check.kind === "map" && check.remote.modifiedAt ? ` dated ${day(check.remote.modifiedAt)}` : ""}` : "";
   if (check.verdict === "newer") return { text: `NEWER: ${remote}`, bad: true };
   if (check.verdict === "missing") return { text: `AVAILABLE: ${remote}`, bad: true };
+  if (check.verdict === "damaged") return { text: "DAMAGED: differs from what was downloaded; Update now downloads it again", bad: true };
   if (check.verdict === "current") return { text: "up to date", bad: false };
   if (check.verdict === "unknown") return { text: "cannot tell whether a newer version exists", bad: false };
   if (check.verdict === "error") return { text: `ERROR: ${check.error}`, bad: true };
@@ -106,7 +107,7 @@ function renderDownloads(overview) {
   const managed = new Set(overview.downloads.map((item) => `${item.kind}:${item.id}`));
   const rows = overview.library.map((row) => {
     const facts = row.exists
-      ? [row.file, bytes(row.bytes), `${row.kind === "zim" ? "edition" : "dated"} ${row.edition || "?"}`, age(row.ageDays), row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : "checksum unknown"]
+      ? [row.file, bytes(row.bytes), `${row.kind === "zim" ? "edition" : "dated"} ${row.edition || "?"}`, age(row.ageDays), row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : row.pinned ? "checksum pinned, not yet verified" : "checksum unknown"]
       : ["not downloaded yet"];
     const verdict = verdictOf(state.lastCheck?.[`${row.kind}:${row.id}`]);
     return el("tr", {}, [
