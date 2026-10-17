@@ -118,8 +118,37 @@ export function zimSeries(name) {
 }
 
 /**
+ * The source ids for a set of ZIM series. A series is normally named after its first part ("wikipedia" for
+ * "wikipedia_nl_all_nopic"). When several series share that part, each gets its series without the flavour
+ * ("wikipedia_nl_all" and "wikipedia_en_medicine"), and the full series when even that is shared.
+ * Returns a Map from series to { sourceId, reason }, where reason names the series it had to make way for.
+ */
+export function zimSourceIds(seriesList) {
+  const bySeries = new Map();
+  const groups = new Map();
+  for (const series of seriesList) {
+    const first = series.split("_")[0].toLowerCase();
+    if (!groups.has(first)) groups.set(first, []);
+    groups.get(first).push(series);
+  }
+  for (const [first, group] of groups) {
+    if (group.length === 1) { bySeries.set(group[0], { sourceId: first, reason: null }); continue; }
+    const shorter = (series) => series.replace(/_[^_]+$/, "").toLowerCase();
+    const counts = new Map();
+    for (const series of group) counts.set(shorter(series), (counts.get(shorter(series)) || 0) + 1);
+    for (const series of group) {
+      const candidate = counts.get(shorter(series)) === 1 ? shorter(series) : series.toLowerCase();
+      const others = group.filter((other) => other !== series);
+      bySeries.set(series, { sourceId: candidate, reason: `${others.join(" and ")} also start${others.length === 1 ? "s" : ""} with "${first}"` });
+    }
+  }
+  return bySeries;
+}
+
+/**
  * ZIM files in a directory, newest edition per series.
- * "wikipedia_nl_all_nopic_2026-04.zim" belongs to series "wikipedia_nl_all_nopic" and source "wikipedia".
+ * "wikipedia_nl_all_nopic_2026-04.zim" belongs to series "wikipedia_nl_all_nopic" and source "wikipedia",
+ * unless another series starts with "wikipedia" too; see zimSourceIds.
  */
 export function discoverBooks(zimDir) {
   let names;
@@ -128,12 +157,16 @@ export function discoverBooks(zimDir) {
   for (const fileName of names) {
     const name = fileName.slice(0, -4);
     const series = zimSeries(name);
-    newest.set(series, { name, series, file: path.join(zimDir, fileName), sourceId: series.split("_")[0].toLowerCase() });
+    newest.set(series, { name, series, file: path.join(zimDir, fileName) });
   }
-  return [...newest.values()];
+  const ids = zimSourceIds([...newest.keys()]);
+  return [...newest.values()].map((book) => ({ ...book, sourceId: ids.get(book.series).sourceId, idReason: ids.get(book.series).reason }));
 }
 
 const ZIM_NAME = /^[a-z0-9][a-z0-9._-]{0,120}$/i;
+const CHECKSUM_LITERAL = /^(?:(md5|sha1|sha256):)?([0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const ALGORITHM_BY_LENGTH = { 32: "md5", 40: "sha1", 64: "sha256" };
+const MAX_RANGE = 500;
 
 function httpUrl(value, label) {
   let url;
@@ -143,10 +176,54 @@ function httpUrl(value, label) {
 }
 
 /**
- * The download list of the library manager (`arviro library`).
- * A ZIM entry names a book in the Kiwix catalogue; a map entry names a region of `maps.regions` and the URL of its extract.
+ * A file inside a document source, as a download entry names it: a relative path with plain segments.
+ * Returns the path with "/" separators, or throws.
  */
-function libraryConfig(input, { zimDir, regions, dataDir }) {
+export function relativeFilePath(value, label) {
+  const text = String(value ?? "").trim().replace(/\\/g, "/");
+  if (!text) throw new ConfigError(`${label} needs a file path inside the source folder.`);
+  if (text.startsWith("/") || /^[a-z]:/i.test(text) || text.startsWith("~")) throw new ConfigError(`${label}: give the path relative to the source folder, not "${text}".`);
+  const segments = text.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === ".." || segment.startsWith("."))) throw new ConfigError(`${label}: "${text}" must not contain empty, hidden or ".." path segments.`);
+  return segments.join("/");
+}
+
+/** The numbers of a `range` ([from, to]) as zero-padded strings, `pad` wide (the width of `to` by default). */
+function rangeNumbers(entry, label) {
+  const range = entry.range;
+  if (!Array.isArray(range) || range.length !== 2 || !range.every((value) => Number.isInteger(value) && value >= 0)) throw new ConfigError(`${label}.range must be [first, last], two whole numbers.`);
+  const [from, to] = range;
+  if (to < from) throw new ConfigError(`${label}.range: the last number is smaller than the first.`);
+  if (to - from + 1 > MAX_RANGE) throw new ConfigError(`${label}.range covers more than ${MAX_RANGE} files.`);
+  const width = entry.pad == null ? String(to).length : Number(entry.pad);
+  if (!Number.isInteger(width) || width < 1 || width > 10) throw new ConfigError(`${label}.pad must be a whole number from 1 to 10.`);
+  const numbers = [];
+  for (let value = from; value <= to; value += 1) numbers.push(String(value).padStart(width, "0"));
+  return numbers;
+}
+
+/**
+ * The files of a "file" download entry: [{ relative, url }]. One file, or with `range` a numbered series in
+ * which "{n}" in the path and the URL stands for the number. Throws a ConfigError on a bad entry.
+ */
+export function expandFileEntry(entry, label = "The file entry") {
+  const relative = relativeFilePath(entry.file, label);
+  if (!entry.url) throw new ConfigError(`${label}: a file entry needs the "url" to download it from.`);
+  const rawUrl = String(entry.url);
+  if (entry.range == null) {
+    if (relative.includes("{n}") || rawUrl.includes("{n}")) throw new ConfigError(`${label}: "{n}" needs a "range" ([first, last]).`);
+    return [{ relative, url: httpUrl(rawUrl, `${label}.url`).href, number: null }];
+  }
+  if (!relative.includes("{n}") || !rawUrl.includes("{n}")) throw new ConfigError(`${label}: with "range", both the file path and the URL need "{n}" where the number goes.`);
+  return rangeNumbers(entry, label).map((number) => ({ relative: relative.replaceAll("{n}", number), url: httpUrl(rawUrl.replaceAll("{n}", number), `${label}.url`).href, number }));
+}
+
+/**
+ * The download list of the library manager (`arviro library`).
+ * A ZIM entry names a book in the Kiwix catalogue; a map entry names a region of `maps.regions` and the URL of its extract;
+ * a file entry names a file inside a document source and the URL to fetch it from (a `range` makes it a numbered series).
+ */
+function libraryConfig(input, { zimDir, regions, dataDir, sources }) {
   const list = input.downloads ?? [];
   if (!Array.isArray(list)) throw new ConfigError("library.downloads must be a list.");
   const downloads = [];
@@ -155,7 +232,8 @@ function libraryConfig(input, { zimDir, regions, dataDir }) {
     const label = `library.downloads[${index}]`;
     const entry = asObject(raw, label);
     let item;
-    if (entry.zim != null && entry.map != null) throw new ConfigError(`${label} must have either "zim" or "map", not both.`);
+    if ([entry.zim, entry.map, entry.file].filter((value) => value != null).length > 1) throw new ConfigError(`${label} must have one of "zim", "map" or "file", not several.`);
+    const items = [];
     if (entry.zim != null) {
       const name = String(entry.zim);
       if (!ZIM_NAME.test(name)) throw new ConfigError(`${label}: "${name}" is not a ZIM name.`);
@@ -171,12 +249,30 @@ function libraryConfig(input, { zimDir, regions, dataDir }) {
       if (entry.checksum === false) checksum = null;
       else if (entry.checksum != null) checksum = httpUrl(new URL(String(entry.checksum), url).href, `${label}.checksum`).href;
       item = { id: region, kind: "map", region, file: regions[region], url: url.href, checksum };
+    } else if (entry.file != null) {
+      const documentSources = Object.values(sources).filter((source) => source.type === "documents");
+      const sourceId = entry.source != null ? String(entry.source) : documentSources.length === 1 ? documentSources[0].id : null;
+      if (!sourceId) throw new ConfigError(`${label}: say in "source" which document source the file belongs to (${documentSources.map((source) => source.id).join(", ") || "none configured"}).`);
+      const source = sources[sourceId];
+      if (!source || source.type !== "documents") throw new ConfigError(`${label}: "${sourceId}" is not a document source.`);
+      // The checksum is a literal hash to pin a version to, a URL of a checksum file ("{n}" allowed with a range), or nothing.
+      const literal = entry.checksum != null && entry.checksum !== false ? String(entry.checksum).match(CHECKSUM_LITERAL) : null;
+      const checksumHex = literal ? { algorithm: (literal[1] || ALGORITHM_BY_LENGTH[literal[2].length]).toLowerCase(), hex: literal[2].toLowerCase() } : null;
+      const note = entry.note == null ? null : String(entry.note).trim().slice(0, 500) || null;
+      for (const { relative, url, number } of expandFileEntry(entry, label)) {
+        const file = path.resolve(source.root, ...relative.split("/"));
+        let checksum = null;
+        if (entry.checksum != null && entry.checksum !== false && !literal) checksum = httpUrl(new URL(String(entry.checksum).replaceAll("{n}", number ?? ""), url).href, `${label}.checksum`).href;
+        items.push({ id: `${sourceId}/${relative}`, kind: "file", source: sourceId, relative, file, url, checksum, checksumHex, note, entry: index });
+      }
     } else {
-      throw new ConfigError(`${label} needs "zim" (a name from the Kiwix catalogue) or "map" (a region from maps.regions).`);
+      throw new ConfigError(`${label} needs "zim" (a name from the Kiwix catalogue), "map" (a region from maps.regions) or "file" (a file in a document source).`);
     }
-    if (ids.has(item.id)) throw new ConfigError(`${label}: "${item.id}" is listed twice.`);
-    ids.add(item.id);
-    downloads.push(item);
+    for (const candidate of item ? [item] : items) {
+      if (ids.has(candidate.id)) throw new ConfigError(`${label}: "${candidate.id}" is listed twice.`);
+      ids.add(candidate.id);
+      downloads.push(candidate);
+    }
   });
   return {
     downloads,
@@ -315,7 +411,7 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
       zimDir,
       books,
     },
-    library: libraryConfig(asObject(input.library, "library"), { zimDir, regions, dataDir }),
+    library: libraryConfig(asObject(input.library, "library"), { zimDir, regions, dataDir, sources }),
     embedding,
     server,
     tools,

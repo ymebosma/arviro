@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ConfigError, discoverBooks, expandHome, normalizeConfig, sourcesInScope } from "../src/config.js";
+import { ConfigError, discoverBooks, expandHome, normalizeConfig, sourcesInScope, zimSourceIds } from "../src/config.js";
+import { checkEnvironment } from "../src/setup.js";
 import { fixtureConfig, makeFixture, WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK } from "./helpers.js";
 
 const fixture = makeFixture();
@@ -20,6 +21,32 @@ test("discoverBooks keeps the newest edition of each series", () => {
   assert.deepEqual(books.map((book) => book.name).sort(), [WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK]);
   assert.deepEqual(books.map((book) => book.sourceId).sort(), ["wikipedia", "wikivoyage"]);
   assert.deepEqual(discoverBooks(path.join(fixture.root, "missing")), []);
+});
+
+test("ZIM series that share a first name part get distinct source ids", async () => {
+  const ids = zimSourceIds(["wikipedia_nl_all_nopic", "wikipedia_en_medicine_nopic", "wikivoyage_nl_all_maxi", "wikibooks_nl_all_maxi", "wikibooks_en_all_nopic", "wikipedia_nl_all_maxi"]);
+  assert.equal(ids.get("wikivoyage_nl_all_maxi").sourceId, "wikivoyage");
+  assert.equal(ids.get("wikivoyage_nl_all_maxi").reason, null);
+  assert.equal(ids.get("wikipedia_en_medicine_nopic").sourceId, "wikipedia_en_medicine");
+  assert.equal(ids.get("wikibooks_nl_all_maxi").sourceId, "wikibooks_nl_all");
+  assert.equal(ids.get("wikibooks_en_all_nopic").sourceId, "wikibooks_en_all");
+  // Two flavours of the same book keep their full series.
+  assert.equal(ids.get("wikipedia_nl_all_nopic").sourceId, "wikipedia_nl_all_nopic");
+  assert.match(ids.get("wikibooks_nl_all_maxi").reason, /wikibooks_en_all_nopic also starts with "wikibooks"/);
+
+  const zimDir = path.join(fixture.root, "zim-collisions");
+  fs.mkdirSync(zimDir, { recursive: true });
+  for (const name of ["wikipedia_nl_all_nopic_2026-04", "wikipedia_en_medicine_nopic_2026-09", "wikivoyage_nl_all_maxi_2026-09"]) fs.writeFileSync(path.join(zimDir, `${name}.zim`), "");
+  assert.deepEqual(discoverBooks(zimDir).map((book) => [book.series, book.sourceId]), [["wikipedia_en_medicine_nopic", "wikipedia_en_medicine"], ["wikipedia_nl_all_nopic", "wikipedia_nl_all"], ["wikivoyage_nl_all_maxi", "wikivoyage"]]);
+  const config = normalizeConfig({ kiwix: { zimDir, descriptions: { wikipedia_en_medicine: "WikiMed: medical articles" }, private: ["wikipedia_nl_all"] } });
+  assert.deepEqual(Object.keys(config.sources).sort(), ["wikipedia_en_medicine", "wikipedia_nl_all", "wikivoyage"]);
+  assert.equal(config.sources.wikipedia_en_medicine.description, "WikiMed: medical articles");
+  assert.equal(config.sources.wikipedia_nl_all.private, true);
+  assert.equal(config.sources.wikivoyage.private, false);
+  // doctor and the Environment tab say why the id is longer than usual.
+  const checks = await checkEnvironment(config, { index: { exists: false }, sources: [] }, { platform: "linux" });
+  assert.match(checks.find((check) => check.id === "source:wikipedia_en_medicine").detail, /named "wikipedia_en_medicine" because wikipedia_nl_all_nopic also starts with "wikipedia".*kiwix\.descriptions/);
+  assert.doesNotMatch(checks.find((check) => check.id === "source:wikivoyage").detail, /because/);
 });
 
 test("normalizeConfig derives sources for documents, ZIM books and maps", () => {

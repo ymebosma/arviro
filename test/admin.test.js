@@ -9,7 +9,7 @@ import { listFolders } from "../src/admin.js";
 import { CURATED, CURATED_LANGUAGES, curatedFor, parseCatalogueFeed, parseGeofabrikIndex, regionIdFor } from "../src/catalogue.js";
 import { fillAssistantName } from "../src/chat.js";
 import { loadConfig, normalizeConfig } from "../src/config.js";
-import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDownload, setDocumentSource, writeRawConfig } from "../src/configfile.js";
+import { addFileDownload, addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDownload, setDocumentSource, writeRawConfig } from "../src/configfile.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
 import { adviceFor, checkEnvironment, hasModel } from "../src/setup.js";
@@ -341,6 +341,36 @@ test("with a token the admin API needs it, and the page can be switched off", as
     await off.close();
   }
   writeConfig();
+});
+
+test("a file from the web can be added to and removed from the download list", async () => {
+  const url = `${remote.url}/docs/guide.pdf`;
+  const added = await api("downloads", { method: "POST", body: { file: "web/guide.pdf", source: "library", url, checksum: "guide.pdf.sha256", note: "Example Org, CC BY 4.0" } });
+  assert.equal(added.status, 200, JSON.stringify(added.body));
+  const item = added.body.downloads.find((entry) => entry.kind === "file");
+  assert.deepEqual(item, { id: "library/web/guide.pdf", kind: "file", url, file: path.join(fixture.library, "web", "guide.pdf"), source: "library", note: "Example Org, CC BY 4.0" });
+  const row = added.body.library.find((entry) => entry.id === "library/web/guide.pdf");
+  assert.equal(row.exists, false);
+  assert.equal(row.note, "Example Org, CC BY 4.0");
+  assert.deepEqual(readRawConfig(configPath).library.downloads, [{ file: "web/guide.pdf", url, source: "library", checksum: "guide.pdf.sha256", note: "Example Org, CC BY 4.0" }]);
+  // The same path again replaces the entry; a path outside the folder or an unknown folder is refused.
+  await api("downloads", { method: "POST", body: { file: "web/guide.pdf", source: "library", url: `${remote.url}/docs/pinned.pdf` } });
+  assert.equal(readRawConfig(configPath).library.downloads.length, 1);
+  assert.equal(readRawConfig(configPath).library.downloads[0].url, `${remote.url}/docs/pinned.pdf`);
+  assert.equal((await api("downloads", { method: "POST", body: { file: "../guide.pdf", source: "library", url } })).status, 400);
+  assert.equal((await api("downloads", { method: "POST", body: { file: "guide.pdf", source: "nowhere", url } })).status, 400);
+  assert.equal((await api("downloads", { method: "POST", body: { file: "guide.pdf", source: "library", url: "ftp://x/y" } })).status, 400);
+  const removed = await api("downloads/remove", { method: "POST", body: { id: "library/web/guide.pdf" } });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(readRawConfig(configPath).library.downloads, []);
+
+  // By hand: a numbered series is one entry, and removing any of its files removes the entry.
+  const raw = { sources: { docs: { path: fixture.library } }, library: { downloads: [] } };
+  assert.throws(() => addFileDownload(raw, { source: "docs", file: "a/part-{n}.pdf", url: "https://example.org/{n}.pdf" }), /needs a "range"/);
+  raw.library.downloads = [{ file: "a/part-{n}.pdf", url: "https://example.org/{n}.pdf", source: "docs", range: [1, 2] }];
+  removeDownload(raw, "docs/a/part-2.pdf");
+  assert.deepEqual(raw.library.downloads, []);
+  assert.throws(() => removeDownload(raw, "docs/a/part-2.pdf"), /not in the download list/);
 });
 
 test("the page can install kiwix-tools itself", async () => {

@@ -200,6 +200,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
   }
 
   const localFileOf = (item) => (item.kind === "zim" ? editionsOf(item.name)[0] || null : item.file);
+  const hashOf = async (file, algorithm) => (await hashFile(file, algorithm)).digest("hex");
 
   function fileFacts(file, entry) {
     const facts = { file: file ? path.basename(file) : null, exists: false, bytes: null, modifiedAt: null };
@@ -209,7 +210,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
       Object.assign(facts, { exists: true, bytes: stat.size, modifiedAt: stat.mtime.toISOString() });
     } catch { return facts; }
     const known = entry && entry.file === facts.file ? entry : null;
-    return { ...facts, downloadedAt: known?.downloadedAt || null, verifiedAt: known?.verifiedAt || null, checksum: known?.checksum || null, remoteModified: known?.remoteModified || null };
+    return { ...facts, downloadedAt: known?.downloadedAt || null, verifiedAt: known?.verifiedAt || null, checksum: known?.checksum || null, remoteModified: known?.remoteModified || null, remoteEtag: known?.remoteEtag || null };
   }
 
   function describe(item, state, managed = true) {
@@ -217,7 +218,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     const edition = item.kind === "zim" ? zimEdition(facts.file || "") : day(facts.remoteModified || facts.modifiedAt);
     const since = item.kind === "zim" ? (edition ? Date.parse(`${edition.length === 7 ? `${edition}-01` : edition}T00:00:00Z`) : NaN) : Date.parse(facts.remoteModified || facts.modifiedAt || "");
     const ageDays = facts.exists && Number.isFinite(since) ? Math.max(0, (now().getTime() - since) / DAY_MS) : null;
-    return { id: item.id, kind: item.kind, managed, ...facts, edition, ageDays };
+    return { id: item.id, kind: item.kind, managed, ...facts, edition, ageDays, ...(item.kind === "file" ? { source: item.source, relative: item.relative, url: item.url, note: item.note } : {}) };
   }
 
   /** What is in the library now, without touching the network. Files that are not in the download list are listed too. */
@@ -265,7 +266,8 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     throw new Error(`"${item.name}" is not in the Kiwix catalogue (${settings.kiwixCatalog})`);
   }
 
-  async function remoteMap(item) {
+  /** What the server says about a map extract or a file: size, Last-Modified and ETag, from a HEAD request. */
+  async function remoteHead(item) {
     const headers = { "user-agent": USER_AGENT };
     let response = await fetchImpl(item.url, { method: "HEAD", headers, redirect: "follow", signal: AbortSignal.timeout(SMALL_TIMEOUT_MS) });
     if ([405, 501].includes(response.status)) {
@@ -276,19 +278,26 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     const modified = Date.parse(response.headers.get("last-modified") || "");
     const range = response.headers.get("content-range")?.match(/\/(\d+)$/)?.[1];
     const length = Number(range || response.headers.get("content-length"));
-    return { file: path.basename(item.file), url: item.url, bytes: length > 0 ? length : null, modifiedAt: Number.isFinite(modified) ? new Date(modified).toISOString() : null };
+    const etag = response.headers.get("etag")?.trim() || null;
+    return { file: path.basename(item.file), url: item.url, bytes: length > 0 ? length : null, modifiedAt: Number.isFinite(modified) ? new Date(modified).toISOString() : null, etag };
   }
 
   /** Compare one item with what the server offers. Returns { ...status row, remote, verdict }. */
   async function checkItem(item, state) {
     const row = describe(item, state);
-    const remote = item.kind === "zim" ? await remoteZim(item) : await remoteMap(item);
+    const remote = item.kind === "zim" ? await remoteZim(item) : await remoteHead(item);
     let verdict;
     if (!row.exists) verdict = "missing";
     else if (item.kind === "zim") verdict = remote.file.slice(0, -4) > row.file.slice(0, -4) ? "newer" : "current";
-    else if (row.checksum && item.checksum) {
+    else if (item.checksumHex) {
+      // A pinned checksum: the file is current as long as it has that hash, whatever the server says.
+      const actual = row.checksum?.split(":")[1] || await hashOf(localFileOf(item), item.checksumHex.algorithm);
+      verdict = actual === item.checksumHex.hex ? "current" : "newer";
+    } else if (row.checksum && item.checksum) {
       const expected = await fetchChecksum(item.checksum, remote.file);
       verdict = `${expected.algorithm}:${expected.hex}` === row.checksum ? "current" : "newer";
+    } else if (remote.etag && row.remoteEtag) {
+      verdict = remote.etag === row.remoteEtag ? "current" : "newer";
     } else if (remote.modifiedAt && (row.remoteModified || row.modifiedAt)) {
       verdict = Date.parse(remote.modifiedAt) > Date.parse(row.remoteModified || row.modifiedAt) ? "newer" : "current";
     } else verdict = "unknown";
@@ -432,12 +441,14 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     return { file: remote.file, bytes: result.bytes, removed };
   }
 
-  async function downloadMap(item, remote, state) {
-    const expected = item.checksum ? await fetchChecksum(item.checksum, remote.file) : null;
+  /** A map extract or a file: one URL, to one path. A file without a published checksum gets its SHA-256 recorded for `verify`. */
+  async function downloadSingle(item, remote, state) {
+    const expected = item.checksumHex || (item.checksum ? await fetchChecksum(item.checksum, remote.file) : null);
     log(`${item.id}: downloading ${remote.file}${remote.bytes ? ` (${formatBytes(remote.bytes)})` : ""}`);
     const result = await downloadFile({ id: item.id, urls: [item.url], target: item.file, expected, bytes: remote.bytes });
     const stamp = now().toISOString();
-    state.items[keyOf(item)] = { file: remote.file, bytes: result.bytes, checksum: expected ? `${expected.algorithm}:${expected.hex}` : null, url: item.url, downloadedAt: stamp, verifiedAt: expected ? stamp : null, remoteModified: remote.modifiedAt };
+    const checksum = expected ? `${expected.algorithm}:${expected.hex}` : item.kind === "file" ? `sha256:${await hashOf(item.file, "sha256")}` : null;
+    state.items[keyOf(item)] = { file: remote.file, bytes: result.bytes, checksum, url: item.url, downloadedAt: stamp, verifiedAt: expected ? stamp : null, remoteModified: remote.modifiedAt, remoteEtag: remote.etag };
     return { file: remote.file, bytes: result.bytes, removed: [] };
   }
 
@@ -460,7 +471,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
       if (!force && checked.verdict === "current") { items.push({ id: item.id, kind: item.kind, action: "current", file: checked.file }); continue; }
       if (!force && checked.verdict === "unknown") { items.push({ id: item.id, kind: item.kind, action: "unknown", file: checked.file }); continue; }
       try {
-        const outcome = item.kind === "zim" ? await downloadZim(item, checked.remote, state) : await downloadMap(item, checked.remote, state);
+        const outcome = item.kind === "zim" ? await downloadZim(item, checked.remote, state) : await downloadSingle(item, checked.remote, state);
         saveState(state);
         items.push({ id: item.id, kind: item.kind, action: "downloaded", ...outcome });
       } catch (error) {
@@ -482,7 +493,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
       if (!file || !fs.existsSync(file)) { rows.push({ ...row, status: "missing" }); continue; }
       if (!entry?.checksum || entry.file !== row.file) { rows.push({ ...row, status: "unknown" }); continue; }
       const [algorithm, hex] = entry.checksum.split(":");
-      const digest = (await hashFile(file, algorithm)).digest("hex");
+      const digest = await hashOf(file, algorithm);
       if (digest === hex) {
         entry.verifiedAt = now().toISOString();
         saveState(state);
@@ -504,7 +515,7 @@ export function formatLibraryRows(rows) {
   if (!rows.length) return "The library is empty: no ZIM files, map regions or library.downloads are configured.";
   const width = Math.max(...rows.map((row) => row.id.length)) + 2;
   return rows.map((row) => {
-    const parts = [pad(row.id, width), pad(row.kind, 5)];
+    const parts = [pad(row.id, width), pad(row.kind, 4)];
     if (!row.exists) parts.push("not downloaded");
     else {
       parts.push(row.file, formatBytes(row.bytes));
@@ -514,6 +525,7 @@ export function formatLibraryRows(rows) {
       parts.push(row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : "checksum unknown");
     }
     if (row.managed === false) parts.push("not in library.downloads");
+    if (row.note) parts.push(`(${row.note})`);
     if (row.verdict === "newer") parts.push(`NEWER: ${row.remote.file}${row.remote.bytes ? ` (${formatBytes(row.remote.bytes)})` : ""}${row.kind === "map" && row.remote.modifiedAt ? ` dated ${day(row.remote.modifiedAt)}` : ""}`);
     else if (row.verdict === "missing") parts.push(`AVAILABLE: ${row.remote.file}${row.remote.bytes ? ` (${formatBytes(row.remote.bytes)})` : ""}`);
     else if (row.verdict === "current") parts.push("up to date");

@@ -170,13 +170,13 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `sources.<id>.expandQueries` | `true` adds cross-language terms to a question (see `search.queryExpansions`). |
 | `sources.<id>.routes` | Narrows a search to a folder when the question contains one of the terms. If that finds nothing, the whole source is searched. |
 | `sources.<id>.exclude` | Extra folder or file names to leave out. `.git`, `node_modules`, `zim`, `pmtiles` and `vendor` are always left out, as is anything starting with a dot. What is left out is neither indexed nor readable. |
-| `kiwix.zimDir` | A folder with `.zim` files. Each file becomes a source named after the first part of its file name: `wikipedia_nl_all_nopic_2026-04.zim` becomes `wikipedia`. Of several editions, the newest is used. |
+| `kiwix.zimDir` | A folder with `.zim` files. Each file becomes a source named after the first part of its file name: `wikipedia_nl_all_nopic_2026-04.zim` becomes `wikipedia`. When two files share that first part, each is named after its file name without the flavour instead (`wikipedia_nl_all` and `wikipedia_en_medicine`); `arviro doctor` and the Environment tab say so. Of several editions, the newest is used. |
 | `kiwix.descriptions` | Descriptions per ZIM source, for example `{ "wikipedia": "Wikipedia (offline): general knowledge" }`. |
 | `kiwix.port` | Port for the kiwix-serve process that Arviro starts on 127.0.0.1. Default 8767. |
 | `kiwix.private` | List of ZIM source ids to treat as private, for example `["wikipedia"]`. |
 | `maps.regions` | OpenStreetMap extracts (`.osm.pbf`) by region name. Together they form the source `maps`. |
 | `maps.description`, `maps.private` | Description of the map source for the model, and `true` to make it private. |
-| `library.downloads` | What `arviro library update` keeps up to date: `{ "zim": "<name>" }` for a book from the Kiwix catalogue, `{ "map": "<region>", "url": "<extract>" }` for a region of `maps.regions`. See [Keeping the library up to date](#keeping-the-library-up-to-date). |
+| `library.downloads` | What `arviro library update` keeps up to date: `{ "zim": "<name>" }` for a book from the Kiwix catalogue, `{ "map": "<region>", "url": "<extract>" }` for a region of `maps.regions`, `{ "file": "<path>", "source": "<id>", "url": "<url>" }` for a document from the web. See [Keeping the library up to date](#keeping-the-library-up-to-date). |
 | `library.indexAfterUpdate` | Run the index after a download. Default `true`. |
 | `library.keepOldEditions` | Keep earlier editions of a ZIM file after a newer one is downloaded. Default `false`: they are deleted. |
 | `library.kiwixCatalog` | The Kiwix catalogue to ask for the latest editions. Default `https://library.kiwix.org/catalog/v2`. |
@@ -217,14 +217,16 @@ If a source folder cannot be read during a run, for example because a disk is no
 
 ### Keeping the library up to date
 
-`arviro library` downloads ZIM files and map extracts, checks their checksums and tells you what is in the library and how old it is. It only touches what is listed under `library.downloads` in the configuration; this is the only part of Arviro that writes to the library, and it is a command for you, not a tool for the model.
+`arviro library` downloads ZIM files, map extracts and documents from the web, checks their checksums and tells you what is in the library and how old it is. It only touches what is listed under `library.downloads` in the configuration; this is the only part of Arviro that writes to the library, and it is a command for you, not a tool for the model.
 
 ```json
 "library": {
   "downloads": [
     { "zim": "wikipedia_en_all_nopic" },
     { "zim": "wikivoyage_en_all_maxi" },
-    { "map": "lu", "url": "https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf" }
+    { "map": "lu", "url": "https://download.geofabrik.de/europe/luxembourg-latest.osm.pbf" },
+    { "file": "manuals/water-treatment.pdf", "source": "library", "url": "https://example.org/water-treatment.pdf", "note": "Example Org, CC BY 4.0" },
+    { "file": "manuals/field-guide-{n}.pdf", "source": "library", "url": "https://example.org/field-guide/{n}.pdf", "range": [1, 12] }
   ]
 }
 ```
@@ -233,6 +235,7 @@ The admin page fills this list for you: under **Library** it shows a few common 
 
 - A `zim` entry is the name of a book as the [Kiwix library](https://library.kiwix.org) lists it, without the edition date. Its latest edition is looked up in the Kiwix catalogue and saved in `kiwix.zimDir`; the SHA-256 checksum from the download's metalink file is checked. Earlier editions of the same book are deleted afterwards, unless `library.keepOldEditions` is `true`.
 - A `map` entry names a region of `maps.regions` and the URL of its extract, for example from [Geofabrik](https://download.geofabrik.de). The file is saved at the region's path. The checksum is read from `<url>.md5`, as Geofabrik publishes it; set `"checksum"` to another URL (`.md5`, `.sha1` or `.sha256`) for other servers, or to `false` to download without a check.
+- A `file` entry is a document a website publishes: a PDF, a manual, a guide. It is saved at `file` inside the document source `source` (which can be left out when there is only one) and indexed with it. Whether a newer version exists is told from the server's checksum file when `checksum` is a URL, else from the `ETag` or `Last-Modified` the server sends; without any of these, `--force` downloads it again. Set `checksum` to a hash (`"sha256:…"`, or a bare MD5, SHA-1 or SHA-256) to pin the version you have: the file is then current as long as it has that hash. A `note` keeps the source and the licence with the entry, so the list is your inventory. For a numbered series, put `{n}` in the path and the URL and give `"range": [first, last]`; the numbers are padded to the width of the last one (`01` to `12`), or to `pad` digits.
 
 The commands:
 
@@ -244,7 +247,7 @@ arviro library update lu --force  # downloads one item again, even when it is up
 arviro library verify             # recomputes the checksums of the files on disk
 ```
 
-`status` also lists ZIM files and map regions that are not in `library.downloads`, so you see everything that is there. A download goes to a `.part` file next to its destination and is only put in place when it is complete and its checksum matches; an interrupted download continues where it stopped the next time. What was downloaded, with its checksum, is kept in `library.json` in `dataDir`.
+`status` also lists ZIM files and map regions that are not in `library.downloads`, so you see everything that is there. The admin page adds files from the web under **Library**; a numbered series is added in the configuration file. A download goes to a `.part` file next to its destination and is only put in place when it is complete and its checksum matches; an interrupted download continues where it stopped the next time. What was downloaded, with its checksum, is kept in `library.json` in `dataDir`.
 
 After a download, `update` runs `arviro index` (switch that off with `--no-index` or `library.indexAfterUpdate`). A running `arviro serve` picks up the new index by itself, but it lists ZIM files when it starts: restart it after a new ZIM edition has arrived.
 

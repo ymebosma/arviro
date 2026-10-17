@@ -152,6 +152,14 @@ export function startFakeDownloads() {
     canonicalFails: false,
     ignoreRange: false,
     meta4Missing: false,
+    // Documents a website publishes, for "file" downloads: path -> { bytes, modified, etag }.
+    docs: {
+      "/docs/guide.pdf": { bytes: Buffer.from("%PDF-1.4 guide, first edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"guide-1"' },
+      "/docs/pinned.pdf": { bytes: Buffer.from("%PDF-1.4 pinned edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"pinned-1"' },
+      "/docs/part-01.pdf": { bytes: Buffer.from("%PDF-1.4 part one"), etag: '"p1"' },
+      "/docs/part-02.pdf": { bytes: Buffer.from("%PDF-1.4 part two"), etag: '"p2"' },
+      "/docs/part-03.pdf": { bytes: Buffer.from("%PDF-1.4 part three"), etag: '"p3"' },
+    },
     requests: [],
     server: null,
     url: "",
@@ -237,6 +245,10 @@ ${entry("nopic", NEW_WIKIPEDIA, ZIM_BYTES.length)}
       if (url.pathname === `/mirror/${NEW_WIKIPEDIA}.zim`) return sendBytes(req, res, ZIM_BYTES);
       if (url.pathname === "/europe/testland-latest.osm.pbf") return sendBytes(req, res, remote.map.bytes, { "last-modified": remote.map.modified });
       if (url.pathname === "/europe/testland-latest.osm.pbf.md5") return text(200, `${hash("md5", remote.map.bytes)}  testland-latest.osm.pbf\n`);
+      const doc = remote.docs[url.pathname];
+      if (doc) return sendBytes(req, res, doc.bytes, { ...(doc.modified ? { "last-modified": doc.modified } : {}), ...(doc.etag ? { etag: doc.etag } : {}) });
+      const checksumOf = url.pathname.match(/^(.*)\.sha256$/);
+      if (checksumOf && remote.docs[checksumOf[1]]) return text(200, `${hash("sha256", remote.docs[checksumOf[1]].bytes)}  ${path.basename(checksumOf[1])}\n`);
       text(404, "not found");
     });
     await new Promise((resolve) => remote.server.listen(0, "127.0.0.1", resolve));

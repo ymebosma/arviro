@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ConfigError, normalizeConfig } from "./config.js";
+import { ConfigError, expandFileEntry, normalizeConfig, relativeFilePath } from "./config.js";
 
 const SOURCE_ID = /^[a-z][a-z0-9_-]{0,30}$/;
 const ZIM_NAME = /^[a-z0-9][a-z0-9._-]{0,120}$/i;
@@ -113,10 +113,31 @@ export function addMapDownload(raw, { id, url }, { defaultMapsDir }) {
   return raw;
 }
 
+/** Add a file from the web to the download list: it lands inside a document source and is indexed with it. */
+export function addFileDownload(raw, { source, file, url, checksum, note }) {
+  const sources = asObject(raw, "sources");
+  if (!source || !sources[source]) throw new ConfigError("Choose the document folder the file belongs to.");
+  const entry = { file: relativeFilePath(file, "The file"), url: String(url || "").trim(), source };
+  if (checksum && String(checksum).trim()) entry.checksum = String(checksum).trim();
+  if (note && String(note).trim()) entry.note = String(note).trim().slice(0, 500);
+  expandFileEntry(entry, "The file");
+  const list = downloads(raw);
+  const id = `${source}/${entry.file}`;
+  const index = list.findIndex((item) => item && item.file != null && fileIdsOf(item).includes(id));
+  if (index >= 0) list[index] = entry;
+  else list.push(entry);
+  return raw;
+}
+
+/** The ids ("<source>/<path>") a raw file entry stands for; an invalid entry stands for nothing. */
+function fileIdsOf(entry) {
+  try { return expandFileEntry(entry).map((file) => `${entry.source}/${file.relative}`); } catch { return []; }
+}
+
 /** Remove a download from the list. A map region stays in `maps.regions` as long as its file exists. */
 export function removeDownload(raw, id, { regionFileExists = () => false } = {}) {
   const list = downloads(raw);
-  const index = list.findIndex((item) => item && (item.zim === id || item.map === id));
+  const index = list.findIndex((item) => item && (item.zim === id || item.map === id || (item.file != null && fileIdsOf(item).includes(id))));
   if (index < 0) throw new ConfigError(`"${id}" is not in the download list.`);
   const [removed] = list.splice(index, 1);
   if (removed.map && raw.maps?.regions?.[removed.map] && !regionFileExists(removed.map)) delete raw.maps.regions[removed.map];

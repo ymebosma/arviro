@@ -13,10 +13,10 @@ The tests are self-contained: they build a small library in a temporary folder a
 
 - `bin/arviro.js`: command line.
 - `src/arviro.js`: the application; `search` and `read` across sources, with a scope (`all` or `public`).
-- `src/config.js`: loads and validates the configuration; derives the sources.
+- `src/config.js`: loads and validates the configuration; derives the sources (ZIM source ids: the first name part, or the series without its flavour when two series share that part).
 - `src/documents.js`: hybrid search (SQLite FTS5 and embeddings) over indexed documents.
 - `src/indexer.js`, `src/db.js`, `src/embeddings.js`, `src/copies.js`: building the index.
-- `src/library.js`: the `library` command for the owner; downloads ZIM files and map extracts from `library.downloads`, checks checksums, keeps `library.json` in `dataDir`. Not reachable by the model.
+- `src/library.js`: the `library` command for the owner; downloads ZIM files, map extracts and documents from the web (`file` entries, inside a document source) from `library.downloads`, checks checksums, keeps `library.json` in `dataDir`. Not reachable by the model.
 - `src/kiwix.js`: ZIM books through a kiwix-serve child process.
 - `src/osm.js`: map data, indexing and search.
 - `src/reader.js`: bounded reading of files inside a source.

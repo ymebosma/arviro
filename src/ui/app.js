@@ -114,14 +114,23 @@ function renderDownloads(overview) {
       el("td", { class: "label" }, [el("b", { text: row.id }), el("span", { class: "muted", text: ` ${row.kind}` })]),
       el("td", {}, [
         el("div", { text: facts.join("  ·  ") }),
+        row.note ? el("div", { class: "muted", text: row.note }) : "",
         row.managed ? "" : el("div", { class: "muted", text: "not in the download list; it stays as it is" }),
         verdict ? el("div", { class: verdict.bad ? "bad" : "ok", text: verdict.text }) : "",
       ]),
       el("td", {}, managed.has(`${row.kind}:${row.id}`) ? el("button", { class: "secondary small", type: "button", onclick: () => removeDownload(row.id) }, "Remove") : ""),
     ]);
   });
-  $("#downloads tbody").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { class: "muted", text: "Nothing yet. Add an encyclopedia or a map below." }))]));
-  $("#download-dirs").textContent = `ZIM files go to ${overview.defaults.zimDir}; map extracts to ${overview.defaults.mapsDir} unless maps.regions says otherwise. After an update the index runs by itself; restart the server after a new ZIM edition.`;
+  $("#downloads tbody").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { class: "muted", text: "Nothing yet. Add an encyclopedia, a map or a file below." }))]));
+  $("#download-dirs").textContent = `ZIM files go to ${overview.defaults.zimDir}; map extracts to ${overview.defaults.mapsDir} unless maps.regions says otherwise; files go into the document folder you choose. After an update the index runs by itself; restart the server after a new ZIM edition.`;
+  // The file form needs a document folder to put the file in.
+  const folders = overview.sources.filter((source) => source.type === "documents");
+  const select = $("#file-source");
+  const chosen = select.value;
+  select.replaceChildren(...folders.map((source) => el("option", { value: source.id, text: source.id })));
+  if (folders.some((source) => source.id === chosen)) select.value = chosen;
+  $("#file-form").classList.toggle("hidden", !folders.length);
+  $("#file-note").classList.toggle("hidden", folders.length > 0);
   const hasDownloads = overview.downloads.length > 0;
   $("#library-check").disabled = !hasDownloads;
   $("#library-update").disabled = !hasDownloads;
@@ -448,6 +457,15 @@ function init() {
     $("#source-path").value = state.folder.path;
     $("#source-path").dispatchEvent(new Event("change"));
     $("#folder-dialog").close();
+  });
+  $("#file-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    change("downloads", { file: $("#file-path").value.trim(), source: $("#file-source").value, url: $("#file-url").value.trim(), checksum: $("#file-checksum").value.trim(), note: $("#file-note-text").value.trim() });
+  });
+  $("#file-url").addEventListener("change", () => {
+    // The file name of the URL is a fair default for the path.
+    if ($("#file-path").value) return;
+    try { $("#file-path").value = decodeURIComponent(new URL($("#file-url").value.trim()).pathname.split("/").pop() || ""); } catch {}
   });
   $("#catalogue-form").addEventListener("submit", (event) => { event.preventDefault(); searchCatalogue(); });
   $("#catalogue-kind").addEventListener("change", searchCatalogue);
