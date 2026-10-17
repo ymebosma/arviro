@@ -117,6 +117,12 @@ export function zimSeries(name) {
   return String(name).replace(/\.zim$/, "").replace(/_\d{4}-\d{2}(?:-\d{2})?$/, "");
 }
 
+/** The language of a ZIM series by its name ("nl" in "wikipedia_nl_all_nopic"), or null when the name does not say. */
+export function zimLanguage(series) {
+  const part = String(series).split("_")[1] || "";
+  return /^[a-z]{2,3}$/.test(part) && part !== "all" ? part : null;
+}
+
 /**
  * The source ids for a set of ZIM series. A series is normally named after its first part ("wikipedia" for
  * "wikipedia_nl_all_nopic"). When several series share that part, each gets its series without the flavour
@@ -160,7 +166,7 @@ export function discoverBooks(zimDir) {
     newest.set(series, { name, series, file: path.join(zimDir, fileName) });
   }
   const ids = zimSourceIds([...newest.keys()]);
-  return [...newest.values()].map((book) => ({ ...book, sourceId: ids.get(book.series).sourceId, idReason: ids.get(book.series).reason }));
+  return [...newest.values()].map((book) => ({ ...book, sourceId: ids.get(book.series).sourceId, idReason: ids.get(book.series).reason, language: zimLanguage(book.series) }));
 }
 
 const ZIM_NAME = /^[a-z0-9][a-z0-9._-]{0,120}$/i;
@@ -307,13 +313,19 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     if (!SOURCE_ID.test(book.sourceId)) throw new ConfigError(`Cannot derive a source id from ZIM file "${book.name}.zim".`);
     const existing = sources[book.sourceId];
     if (existing && existing.type !== "kiwix") throw new ConfigError(`Source id "${book.sourceId}" is used by both a document source and a ZIM file.`);
-    if (existing) { existing.books.push(book); continue; }
+    if (existing) {
+      existing.books.push(book);
+      if (existing.language !== book.language) existing.language = null;
+      continue;
+    }
     sources[book.sourceId] = {
       id: book.sourceId,
       type: "kiwix",
       description: String(kiwixDescriptions[book.sourceId] || `Offline ${book.sourceId} (Kiwix)`),
       private: privateBooks.has(book.sourceId),
       books: [book],
+      // The language of the books, from their names; a search in another language finds little in an encyclopedia.
+      language: book.language,
     };
   }
 

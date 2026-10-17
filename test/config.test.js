@@ -43,6 +43,8 @@ test("ZIM series that share a first name part get distinct source ids", async ()
   assert.equal(config.sources.wikipedia_en_medicine.description, "WikiMed: medical articles");
   assert.equal(config.sources.wikipedia_nl_all.private, true);
   assert.equal(config.sources.wikivoyage.private, false);
+  assert.equal(config.sources.wikipedia_en_medicine.language, "en");
+  assert.equal(config.sources.wikipedia_nl_all.language, "nl");
   // doctor and the Environment tab say why the id is longer than usual.
   const checks = await checkEnvironment(config, { index: { exists: false }, sources: [] }, { platform: "linux" });
   assert.match(checks.find((check) => check.id === "source:wikipedia_en_medicine").detail, /named "wikipedia_en_medicine" because wikipedia_nl_all_nopic also starts with "wikipedia".*kiwix\.descriptions/);

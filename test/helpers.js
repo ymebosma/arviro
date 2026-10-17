@@ -258,7 +258,10 @@ ${entry("nopic", NEW_WIKIPEDIA, ZIM_BYTES.length)}
   return remote;
 }
 
+export const MDWIKI_BOOK = "mdwiki_en_all_maxi_2026-09";
+
 const ARTICLES = {
+  [`/kiwix/content/${MDWIKI_BOOK}/Dehydration`]: { title: "Dehydration", snippet: "Dehydration in children: signs are a dry mouth and few wet nappies. First aid: give fluids." },
   [`/kiwix/content/${WIKIPEDIA_BOOK}/Gregor_Kobel`]: { title: "Gregor Kobel", snippet: "Gregor Kobel is een Zwitsers <b>voetballer</b> die als doelman speelt." },
   [`/kiwix/content/${WIKIPEDIA_BOOK}/Gouda`]: { title: "Gouda", snippet: "Gouda is een stad en gemeente in Zuid-Holland." },
   [`/kiwix/content/${WIKIVOYAGE_BOOK}/Gouda`]: { title: "Gouda", snippet: "Gouda is een stad met een bekende kaasmarkt." },
@@ -293,7 +296,7 @@ export async function startFakeKiwix() {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(`<html><head><title>${article.title}</title></head><body><h1>${article.title}</h1><p>${article.snippet}</p><p>Tweede alinea.</p></body></html>`);
     }
-    if ([WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK].some((name) => url.pathname === `/kiwix/content/${name}`)) {
+    if ([WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK, MDWIKI_BOOK].some((name) => url.pathname === `/kiwix/content/${name}`)) {
       res.writeHead(302, { location: `${url.pathname}/Hoofdpagina` });
       return res.end();
     }

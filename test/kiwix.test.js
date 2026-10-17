@@ -3,7 +3,9 @@ import test, { after, before } from "node:test";
 import { createArviro } from "../src/arviro.js";
 import { articleLines, parseSearchXml } from "../src/kiwix.js";
 import { UserInputError } from "../src/text.js";
-import { conceptEmbedder, fixtureConfig, makeFixture, startFakeKiwix, WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK } from "./helpers.js";
+import { conceptEmbedder, fixtureConfig, makeFixture, MDWIKI_BOOK, startFakeKiwix, WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK } from "./helpers.js";
+import fs from "node:fs";
+import path from "node:path";
 
 const fixture = makeFixture();
 let fake;
@@ -40,6 +42,31 @@ test("search covers only the books of the chosen source", async () => {
   const wikivoyage = await arviro.search({ source: "wikivoyage", query: "Waar ligt Gouda?" });
   assert.deepEqual(wikivoyage.results.map((hit) => hit.read.path), [`/kiwix/content/${WIKIVOYAGE_BOOK}/Gouda`]);
   assert.ok(fake.requests.every((request) => !request.includes("2025-01")), "the older edition is not queried");
+});
+
+test("an English book gets the Dutch-to-English expansions, says its language, and hints when nothing is found", async () => {
+  const zimDir = path.join(fixture.root, "zim-english");
+  fs.mkdirSync(zimDir, { recursive: true });
+  fs.writeFileSync(path.join(zimDir, `${MDWIKI_BOOK}.zim`), "");
+  const english = createArviro(fixtureConfig(fixture, { kiwix: { zimDir, port: fake.port } }));
+  try {
+    const source = english.sources("all").find((candidate) => candidate.id === "mdwiki");
+    assert.equal(source.language, "en");
+    assert.equal(arviro.sources("all").find((candidate) => candidate.id === "wikipedia").language, "nl");
+    fake.requests.length = 0;
+    const found = await english.search({ source: "mdwiki", query: "eerste hulp bij uitdroging" });
+    assert.deepEqual(found.results.map((hit) => hit.title), ["Dehydration"]);
+    assert.ok(fake.requests.some((line) => line.includes("pattern=") && /first/.test(decodeURIComponent(line))), fake.requests.join("\n"));
+    assert.equal(found.warnings, undefined);
+    const nothing = await english.search({ source: "mdwiki", query: "waar is de kaasmarkt" });
+    assert.deepEqual(nothing.results, []);
+    assert.deepEqual(nothing.warnings, ["This source is in English; search again with English words."]);
+    // A Dutch book is searched as it is, and a miss there gets no hint about English.
+    const dutch = await arviro.search({ source: "wikipedia", query: "waar is de kaasmarkt" });
+    assert.deepEqual(dutch.warnings, ["This source is in Dutch; search again with Dutch words."]);
+  } finally {
+    english.close();
+  }
 });
 
 test("who-is questions are verified, ambiguous or not found", async () => {

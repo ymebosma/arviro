@@ -9,7 +9,7 @@ import { createKiwix } from "./kiwix.js";
 import { TOOL_READ } from "./names.js";
 import { createOsmSearch } from "./osm.js";
 import { readDocument } from "./reader.js";
-import { normalizeComparable, normalizePathPrefix, ServiceError, UserInputError } from "./text.js";
+import { languageName, normalizeComparable, normalizePathPrefix, ServiceError, UserInputError } from "./text.js";
 
 const POLICY = Object.freeze({
   found: `These results are locations, not answers. If the excerpt is not enough, read only the single most relevant result with ${TOOL_READ}, passing its \`read\` arguments unchanged.`,
@@ -134,9 +134,11 @@ export function createArviro(config, { embedder = createEmbedder(config.embeddin
 
   async function searchKiwix(source, query, limit, warnings) {
     const queryVector = await embedQuery(query, warnings);
+    // The encyclopedia matches words literally: for an English one, the Dutch-to-English expansions add the words it knows.
+    const retrievalQuery = source.language === "en" ? expandQuery(query, config.search.queryExpansions) : query;
     let found;
     try {
-      found = await kiwixService.search(source, query, { queryVector, embedder, limit });
+      found = await kiwixService.search(source, retrievalQuery, { queryVector, embedder, limit });
     } catch (error) {
       log(`${source.id} search failed: ${error.message}`);
       warnings.push(error instanceof ServiceError ? `${source.id} is not available: ${error.message}` : `${source.id} is not available right now.`);
@@ -154,6 +156,7 @@ export function createArviro(config, { embedder = createEmbedder(config.embeddin
       }
     }
     const results = found.results.map((item) => ({ title: item.title, snippet: item.snippet, read: { source: source.id, path: item.link } }));
+    if (!results.length && source.language) warnings.push(`This source is in ${languageName(source.language)}; search again with ${languageName(source.language)} words.`);
     return { results, evidence, policy: results.length ? POLICY.found : POLICY.none };
   }
 

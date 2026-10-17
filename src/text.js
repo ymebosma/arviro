@@ -9,6 +9,13 @@ const MAX_LINE_CHARS = 1600;
 export const STOPWORDS = new Set(`${STOPWORDS_NL} ${STOPWORDS_EN}`.split(/\s+/));
 
 /** An error caused by the caller's input; its message is safe and useful to show to the model. */
+const LANGUAGE_NAMES = { en: "English", nl: "Dutch", de: "German", fr: "French", es: "Spanish", it: "Italian", pt: "Portuguese", ar: "Arabic", zh: "Chinese", ru: "Russian", ja: "Japanese", tr: "Turkish", pl: "Polish", sv: "Swedish", da: "Danish", nb: "Norwegian", fi: "Finnish", id: "Indonesian", hi: "Hindi", uk: "Ukrainian" };
+
+/** The English name of a language code ("en" is "English"); an unknown code is given as it is. */
+export function languageName(code) {
+  return LANGUAGE_NAMES[String(code || "").toLowerCase()] || String(code || "");
+}
+
 export class UserInputError extends Error {
   constructor(message) {
     super(message);

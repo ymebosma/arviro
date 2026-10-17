@@ -62,6 +62,7 @@ test("the server offers two read-only tools and describes the sources", async ()
   const [search, read] = tools;
   assert.deepEqual(search.inputSchema.properties.source.enum, ["library", "wiki", "wikipedia", "wikivoyage", "maps"]);
   assert.match(search.inputSchema.properties.source.description, /- library: Test library/);
+  assert.match(search.inputSchema.properties.source.description, /- wikipedia: .* \(in Dutch\)/);
   assert.deepEqual(search.inputSchema.required, ["query", "source"]);
   assert.deepEqual(search.inputSchema.properties.limit, { description: "Maximum number of results (default 5, at most 10).", type: "integer", minimum: 1, maximum: 1000 });
   assert.equal(search.inputSchema.properties.pathPrefix.type, "string");
