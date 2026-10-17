@@ -278,7 +278,7 @@ test("file downloads keep documents from the web inside a document source and up
   assert.equal(damaged[0].verdict, "damaged");
   assert.match(formatLibraryRows(damaged), /DAMAGED: the file differs/);
   fs.appendFileSync(path.join(fixture.library, "web", "pinned.pdf"), "!");
-  assert.equal((await library.check(["library/web/pinned.pdf"]))[0].verdict, "newer", "a pinned file that lost its hash is fetched again");
+  assert.equal((await library.check(["library/web/pinned.pdf"]))[0].verdict, "damaged", "a pinned file that lost its hash is fetched again");
   // The server offers the newer, unwanted edition: the download does not match the pin and is discarded.
   assert.equal((await library.update(["library/web/pinned.pdf"])).items[0].action, "failed");
   remote.docs["/docs/pinned.pdf"] = { bytes: Buffer.from("%PDF-1.4 pinned edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"pinned-1"', headFails: true };

@@ -293,7 +293,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     const expectedLocal = item.kind === "file" && row.exists ? item.checksumHex || (row.checksum ? { algorithm: row.checksum.split(":")[0], hex: row.checksum.split(":")[1] } : null) : null;
     const localHash = expectedLocal ? await hashOf(localFileOf(item), expectedLocal.algorithm) : null;
     if (!row.exists) verdict = "missing";
-    else if (expectedLocal && localHash !== expectedLocal.hex) verdict = item.checksumHex ? "newer" : "damaged";
+    else if (expectedLocal && localHash !== expectedLocal.hex) verdict = "damaged";
     else if (item.kind === "zim") verdict = remote.file.slice(0, -4) > row.file.slice(0, -4) ? "newer" : "current";
     else if (item.checksumHex) {
       // A pinned checksum: the file has that hash (checked above), so it is current whatever the server says.
