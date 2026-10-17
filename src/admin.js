@@ -9,7 +9,7 @@ import { createArviro } from "./arviro.js";
 import { createCatalogue } from "./catalogue.js";
 import { createChat } from "./chat.js";
 import { ConfigError, expandHome, loadConfig, userBinDir } from "./config.js";
-import { addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDocumentSource, removeDownload, setDocumentSource, writeRawConfig } from "./configfile.js";
+import { addFileDownload, addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDocumentSource, removeDownload, setDocumentSource, writeRawConfig } from "./configfile.js";
 import { createEmbedder } from "./embeddings.js";
 import { buildIndex } from "./indexer.js";
 import { createLibrary, formatBytes } from "./library.js";
@@ -127,7 +127,7 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
       sources: status.sources,
       index: status.index,
       library: createLibrary(current, { log }).status(),
-      downloads: current.library.downloads.map((item) => ({ id: item.id, kind: item.kind, ...(item.kind === "map" ? { url: item.url, file: item.file } : {}) })),
+      downloads: current.library.downloads.map((item) => ({ id: item.id, kind: item.kind, ...(item.kind === "map" ? { url: item.url, file: item.file } : item.kind === "file" ? { url: item.url, file: item.file, source: item.source, note: item.note } : {}) })),
       defaults: defaults(current),
       job: jobs.current,
     };
@@ -227,7 +227,8 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
         const { zimDir, mapsDir } = defaults(current);
         if (input.zim) addZimDownload(raw, String(input.zim), { defaultZimDir: homeRelative(zimDir) });
         else if (input.map) addMapDownload(raw, { id: String(input.map), url: String(input.url || "") }, { defaultMapsDir: homeRelative(mapsDir) });
-        else throw new UserInputError('Give "zim" (a book name) or "map" and "url".');
+        else if (input.file) addFileDownload(raw, { source: String(input.source || ""), file: String(input.file), url: String(input.url || ""), checksum: input.checksum, note: input.note });
+        else throw new UserInputError('Give "zim" (a book name), "map" and "url", or "file", "source" and "url".');
       });
     } else if (route === "downloads/remove") {
       changeConfig((raw, current) => removeDownload(raw, String(input.id || ""), { regionFileExists: (region) => fs.existsSync(current.sources.maps?.regions?.[region] || "") }));

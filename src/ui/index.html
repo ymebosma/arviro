@@ -83,6 +83,26 @@
       </div>
 
       <div class="card">
+        <h2>Add a file from the web</h2>
+        <p class="muted">A PDF or other document that a website publishes, kept up to date like the rest: it is saved inside one of your document folders and indexed with it. For a numbered series, put <code>{n}</code> in the path and the URL and add <code>"range": [first, last]</code> to the entry in the configuration file.</p>
+        <p class="muted hidden" id="file-note">Add a document folder first; the file is saved inside it.</p>
+        <form id="file-form" class="stack">
+          <div class="row">
+            <input type="url" id="file-url" placeholder="https://example.org/guide.pdf" class="grow" required>
+            <select id="file-source"></select>
+          </div>
+          <div class="row">
+            <input type="text" id="file-path" placeholder="path inside the folder, e.g. manuals/guide.pdf" class="grow" required>
+            <input type="text" id="file-checksum" placeholder="checksum (optional): a URL, or sha256:… to pin a version">
+          </div>
+          <div class="row">
+            <input type="text" id="file-note-text" placeholder="note (optional): source and licence" class="grow">
+            <button type="submit">Add file</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
         <h2>Add from the catalogues</h2>
         <form id="catalogue-form" class="row">
           <select id="catalogue-kind">

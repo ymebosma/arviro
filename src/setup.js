@@ -103,12 +103,19 @@ export async function checkEnvironment(config, status, { fetchImpl = fetch, plat
   check("sources", "sources", sources.length > 0, sources.length ? sources.map((source) => source.id).join(", ") : "none configured yet", sources.length ? {} : { advice: { text: "Add a document folder or download a ZIM file or map under Library." } });
   for (const source of sources) {
     if (source.type === "documents") check(`source:${source.id}`, `source ${source.id}`, fs.existsSync(source.root), source.root, fs.existsSync(source.root) ? {} : { advice: { text: "The folder does not exist. Connect the disk, or change or remove the source." } });
-    if (source.type === "kiwix") check(`source:${source.id}`, `source ${source.id}`, true, source.books.map((book) => `${book.name}.zim`).join(", "));
+    if (source.type === "kiwix") {
+      const reason = source.books.find((book) => book.idReason)?.idReason;
+      check(`source:${source.id}`, `source ${source.id}`, true, `${source.books.map((book) => `${book.name}.zim`).join(", ")}${reason ? `; named "${source.id}" because ${reason}: use that id in kiwix.descriptions and kiwix.private` : ""}`);
+    }
     if (source.type === "maps") {
       for (const [region, file] of Object.entries(source.regions)) check(`map:${region}`, `map region ${region}`, fs.existsSync(file), file, fs.existsSync(file) ? {} : { advice: { text: "The extract has not been downloaded yet: run the library update." }, fix: "library-update" });
     }
   }
 
+  if (config.kiwix.staleKeys?.length) {
+    const ids = sources.filter((source) => source.type === "kiwix").map((source) => source.id);
+    check("kiwix-keys", "kiwix settings", false, `kiwix.descriptions or kiwix.private name ${config.kiwix.staleKeys.join(", ")}, which is not a ZIM source${ids.length ? ` (the sources are ${ids.join(", ")})` : ""}`, { advice: { text: "Rename or remove those keys in the configuration file; a source id changes when another book with the same first name part arrives." } });
+  }
   if (sources.some((source) => source.type === "documents")) check("pdftotext", "pdftotext (reads PDF files)", Boolean(config.tools.pdftotext), config.tools.pdftotext || "not found", config.tools.pdftotext ? {} : { advice: adviceFor("pdftotext", platform) });
   if (config.kiwix.books.length || config.library.downloads.some((item) => item.kind === "zim")) check("kiwix-serve", "kiwix-serve (reads ZIM files)", Boolean(config.tools.kiwixServe), config.tools.kiwixServe || "not found", config.tools.kiwixServe ? {} : { advice: adviceFor("kiwix-serve", platform), fix: "kiwix-tools" });
   if (config.sources.maps) check("osmium", "osmium (indexes map data)", Boolean(config.tools.osmium), config.tools.osmium || "not found", config.tools.osmium ? {} : { advice: adviceFor("osmium", platform) });

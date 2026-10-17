@@ -152,6 +152,15 @@ export function startFakeDownloads() {
     canonicalFails: false,
     ignoreRange: false,
     meta4Missing: false,
+    // Documents a website publishes, for "file" downloads: path -> { bytes, modified, etag }.
+    docs: {
+      "/docs/guide.pdf": { bytes: Buffer.from("%PDF-1.4 guide, first edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"guide-1"' },
+      // Like a document repository that breaks on HEAD but serves GET: the check falls back to a GET of the first byte.
+      "/docs/pinned.pdf": { bytes: Buffer.from("%PDF-1.4 pinned edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"pinned-1"', headFails: true },
+      "/docs/part-01.pdf": { bytes: Buffer.from("%PDF-1.4 part one"), etag: '"p1"' },
+      "/docs/part-02.pdf": { bytes: Buffer.from("%PDF-1.4 part two"), etag: '"p2"' },
+      "/docs/part-03.pdf": { bytes: Buffer.from("%PDF-1.4 part three"), etag: '"p3"' },
+    },
     requests: [],
     server: null,
     url: "",
@@ -237,6 +246,11 @@ ${entry("nopic", NEW_WIKIPEDIA, ZIM_BYTES.length)}
       if (url.pathname === `/mirror/${NEW_WIKIPEDIA}.zim`) return sendBytes(req, res, ZIM_BYTES);
       if (url.pathname === "/europe/testland-latest.osm.pbf") return sendBytes(req, res, remote.map.bytes, { "last-modified": remote.map.modified });
       if (url.pathname === "/europe/testland-latest.osm.pbf.md5") return text(200, `${hash("md5", remote.map.bytes)}  testland-latest.osm.pbf\n`);
+      const doc = remote.docs[url.pathname];
+      if (doc && doc.headFails && req.method === "HEAD") return text(500, "Internal Server Error");
+      if (doc) return sendBytes(req, res, doc.bytes, { ...(doc.modified ? { "last-modified": doc.modified } : {}), ...(doc.etag ? { etag: doc.etag } : {}) });
+      const checksumOf = url.pathname.match(/^(.*)\.sha256$/);
+      if (checksumOf && remote.docs[checksumOf[1]]) return text(200, `${hash("sha256", remote.docs[checksumOf[1]].bytes)}  ${path.basename(checksumOf[1])}\n`);
       text(404, "not found");
     });
     await new Promise((resolve) => remote.server.listen(0, "127.0.0.1", resolve));
@@ -246,7 +260,10 @@ ${entry("nopic", NEW_WIKIPEDIA, ZIM_BYTES.length)}
   return remote;
 }
 
+export const MDWIKI_BOOK = "mdwiki_en_all_maxi_2026-09";
+
 const ARTICLES = {
+  [`/kiwix/content/${MDWIKI_BOOK}/Dehydration`]: { title: "Dehydration", snippet: "Dehydration in children: signs are a dry mouth and few wet nappies. First aid: give fluids." },
   [`/kiwix/content/${WIKIPEDIA_BOOK}/Gregor_Kobel`]: { title: "Gregor Kobel", snippet: "Gregor Kobel is een Zwitsers <b>voetballer</b> die als doelman speelt." },
   [`/kiwix/content/${WIKIPEDIA_BOOK}/Gouda`]: { title: "Gouda", snippet: "Gouda is een stad en gemeente in Zuid-Holland." },
   [`/kiwix/content/${WIKIVOYAGE_BOOK}/Gouda`]: { title: "Gouda", snippet: "Gouda is een stad met een bekende kaasmarkt." },
@@ -281,7 +298,7 @@ export async function startFakeKiwix() {
       res.writeHead(200, { "content-type": "text/html" });
       return res.end(`<html><head><title>${article.title}</title></head><body><h1>${article.title}</h1><p>${article.snippet}</p><p>Tweede alinea.</p></body></html>`);
     }
-    if ([WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK].some((name) => url.pathname === `/kiwix/content/${name}`)) {
+    if ([WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK, MDWIKI_BOOK].some((name) => url.pathname === `/kiwix/content/${name}`)) {
       res.writeHead(302, { location: `${url.pathname}/Hoofdpagina` });
       return res.end();
     }

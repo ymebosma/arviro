@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   chunksFromLines, chunksFromPages, decodeEntities, elementText, extractEntityLookup, ftsQuery, htmlToText, levenshtein,
-  normalizePathPrefix, numberedLines, properNamePhrases, properNames, squeezeSpaces, stripTags, titleFromText, tokensFor, UserInputError,
+  guessLanguage, normalizePathPrefix, numberedLines, properNamePhrases, properNames, squeezeSpaces, stripTags, titleFromText, tokensFor, UserInputError,
 } from "../src/text.js";
 
 /** Run `work` and fail when it takes longer than a second: guards against patterns that backtrack. */
@@ -107,4 +107,14 @@ test("normalizePathPrefix accepts folders and rejects traversal", () => {
   assert.equal(normalizePathPrefix(""), "");
   assert.throws(() => normalizePathPrefix("../etc"), UserInputError);
   assert.throws(() => normalizePathPrefix("a;b"), UserInputError);
+});
+
+test("guessLanguage tells Dutch from English by function words, and stays quiet otherwise", () => {
+  assert.equal(guessLanguage("wat zijn de tekenen van uitdroging bij kinderen"), "nl");
+  assert.equal(guessLanguage("what are the signs of dehydration in children"), "en");
+  assert.equal(guessLanguage("Gouda"), null);
+  assert.equal(guessLanguage("eerste hulp bij uitdroging"), null);
+  const started = Date.now();
+  guessLanguage("de the ".repeat(200_000));
+  assert.ok(Date.now() - started < 1000);
 });

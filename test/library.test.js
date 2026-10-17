@@ -95,7 +95,34 @@ test("the download list is validated", () => {
   const rejects = (library, pattern) => assert.throws(() => makeConfig(library), pattern);
   rejects({ downloads: {} }, /must be a list/);
   rejects({ downloads: [{}] }, /needs "zim"/);
-  rejects({ downloads: [{ zim: "x", map: "test" }] }, /not both/);
+  rejects({ downloads: [{ zim: "x", map: "test" }] }, /not several/);
+  // File entries: a path inside a document source, a URL, and optionally a checksum, a note and a numbered range.
+  const docsUrl = `${remote.url}/docs/guide.pdf`;
+  rejects({ downloads: [{ file: "web/guide.pdf", url: docsUrl }] }, /say in "source"/);
+  rejects({ downloads: [{ file: "web/guide.pdf", url: docsUrl, source: "maps" }] }, /not a document source/);
+  rejects({ downloads: [{ file: "web/guide.pdf", source: "library" }] }, /needs the "url"/);
+  rejects({ downloads: [{ file: "../guide.pdf", url: docsUrl, source: "library" }] }, /must not contain/);
+  rejects({ downloads: [{ file: "/etc/guide.pdf", url: docsUrl, source: "library" }] }, /relative to the source folder/);
+  rejects({ downloads: [{ file: "web/.hidden/guide.pdf", url: docsUrl, source: "library" }] }, /hidden/);
+  rejects({ downloads: [{ file: "web/part-{n}.pdf", url: docsUrl, source: "library" }] }, /needs a "range"/);
+  rejects({ downloads: [{ file: "web/part.pdf", url: docsUrl, source: "library", range: [1, 3] }] }, /need "\{n\}"/);
+  rejects({ downloads: [{ file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [3, 1] }] }, /smaller than the first/);
+  rejects({ downloads: [{ file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [1, 9000] }] }, /more than 500 files/);
+  rejects({ downloads: [{ file: "web/guide.pdf", url: docsUrl, source: "library" }, { file: "web/guide.pdf", url: docsUrl, source: "library" }] }, /listed twice/);
+  const files = makeConfig({ downloads: [
+    { file: "web/guide.pdf", url: docsUrl, source: "library", checksum: "guide.pdf.sha256", note: "Example Org, CC BY 4.0" },
+    { file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [1, 3], pad: 2 },
+    { file: "web/pinned.pdf", url: `${remote.url}/docs/pinned.pdf`, source: "library", checksum: `sha256:${"ab".repeat(32)}` },
+  ] }).library.downloads;
+  assert.deepEqual(files.map((item) => item.id), ["library/web/guide.pdf", "library/web/part-01.pdf", "library/web/part-02.pdf", "library/web/part-03.pdf", "library/web/pinned.pdf"]);
+  assert.equal(files[0].file, path.join(fixture.library, "web", "guide.pdf"));
+  assert.equal(files[0].checksum, `${remote.url}/docs/guide.pdf.sha256`);
+  assert.equal(files[0].note, "Example Org, CC BY 4.0");
+  assert.equal(files[2].url, `${remote.url}/docs/part-02.pdf`);
+  assert.deepEqual(files[4].checksumHex, { algorithm: "sha256", hex: "ab".repeat(32) });
+  // With one document source, "source" can be left out; the range's numbers are as wide as the last one.
+  const single = normalizeConfig({ sources: { docs: { path: fixture.library } }, library: { downloads: [{ file: "a/{n}.pdf", url: "https://example.org/{n}.pdf", range: [8, 12] }] } });
+  assert.deepEqual(single.library.downloads.map((item) => item.relative), ["a/08.pdf", "a/09.pdf", "a/10.pdf", "a/11.pdf", "a/12.pdf"]);
   rejects({ downloads: [{ zim: "wikipedia_nl_all_nopic_2026-04" }] }, /without the edition date/);
   rejects({ downloads: [{ zim: "bad name" }] }, /not a ZIM name/);
   rejects({ downloads: [{ map: "nowhere", url: "https://example.org/x" }] }, /not a region/);
@@ -192,6 +219,79 @@ test("update downloads new editions, verifies checksums, removes old editions an
   assert.equal(fs.readFileSync(path.join(fixture.root, "maps/test.osm.pbf"), "utf8"), "map extract, version two");
   assert.equal(fs.statSync(path.join(fixture.root, "maps/test.osm.pbf")).mode & 0o777, 0o600);
   assert.equal(library.status()[1].edition, "2026-10-01");
+});
+
+test("file downloads keep documents from the web inside a document source and up to date", async () => {
+  const sha256Of = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
+  const library = createLibrary(makeConfig({ downloads: [
+    { file: "web/guide.pdf", url: `${remote.url}/docs/guide.pdf`, source: "library", checksum: "guide.pdf.sha256", note: "Example Org, CC BY 4.0" },
+    { file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [1, 3], pad: 2 },
+    { file: "web/pinned.pdf", url: `${remote.url}/docs/pinned.pdf`, source: "library", checksum: `sha256:${sha256Of(remote.docs["/docs/pinned.pdf"].bytes)}` },
+  ] }), { ...quiet, now: clock("2026-10-17T12:00:00Z") });
+
+  const before = library.status();
+  assert.deepEqual(before.map((row) => [row.id, row.kind, row.exists]), [
+    ["library/web/guide.pdf", "file", false], ["library/web/part-01.pdf", "file", false], ["library/web/part-02.pdf", "file", false], ["library/web/part-03.pdf", "file", false], ["library/web/pinned.pdf", "file", false],
+    ["wikipedia_nl_all_nopic", "zim", true], ["wikivoyage_nl_all_maxi", "zim", true], ["test", "map", true],
+  ]);
+  assert.equal(before[0].note, "Example Org, CC BY 4.0");
+  assert.match(formatLibraryRows(before), /library\/web\/guide\.pdf +file +not downloaded +\(Example Org, CC BY 4\.0\)/);
+  assert.deepEqual((await library.check()).map((row) => row.verdict), ["missing", "missing", "missing", "missing", "missing"]);
+
+  const summary = await library.update();
+  assert.equal(summary.downloaded, 5, formatUpdate(summary));
+  const guide = path.join(fixture.library, "web", "guide.pdf");
+  assert.equal(fs.readFileSync(guide, "utf8"), "%PDF-1.4 guide, first edition");
+  assert.equal(fs.readFileSync(path.join(fixture.library, "web", "part-03.pdf"), "utf8"), "%PDF-1.4 part three");
+  const state = JSON.parse(fs.readFileSync(makeConfig().library.stateFile, "utf8"));
+  assert.equal(state.items["file:library/web/guide.pdf"].checksum, `sha256:${sha256Of(remote.docs["/docs/guide.pdf"].bytes)}`);
+  assert.equal(state.items["file:library/web/part-02.pdf"].remoteEtag, '"p2"');
+  assert.equal(state.items["file:library/web/part-02.pdf"].checksum, `sha256:${sha256Of(remote.docs["/docs/part-02.pdf"].bytes)}`, "a file without a published checksum gets one recorded for verify");
+  const after = library.status();
+  assert.equal(after[0].edition, "2026-03-02");
+  assert.equal(after[0].verifiedAt, "2026-10-17T12:00:00.000Z");
+  assert.deepEqual((await library.check()).map((row) => row.verdict), ["current", "current", "current", "current", "current"]);
+  assert.deepEqual((await library.verify()).map((row) => row.status), ["ok", "ok", "ok", "ok", "ok"]);
+
+  // The website publishes a new guide (its checksum file changes), a new part two (its ETag changes), and a new
+  // pinned document, which is not wanted: the pinned checksum keeps the edition that is there.
+  remote.docs["/docs/guide.pdf"] = { bytes: Buffer.from("%PDF-1.4 guide, second edition"), modified: "Thu, 01 Oct 2026 10:00:00 GMT", etag: '"guide-2"' };
+  remote.docs["/docs/part-02.pdf"] = { bytes: Buffer.from("%PDF-1.4 part two, revised"), etag: '"p2b"' };
+  remote.docs["/docs/pinned.pdf"] = { bytes: Buffer.from("%PDF-1.4 pinned, newer"), modified: "Thu, 01 Oct 2026 10:00:00 GMT", etag: '"pinned-2"' };
+  assert.deepEqual((await library.check()).map((row) => row.verdict), ["newer", "current", "newer", "current", "current"]);
+  const again = await library.update();
+  assert.deepEqual(again.items.map((row) => row.action), ["downloaded", "current", "downloaded", "current", "current"]);
+  assert.equal(fs.readFileSync(guide, "utf8"), "%PDF-1.4 guide, second edition");
+  assert.equal(fs.readFileSync(path.join(fixture.library, "web", "part-02.pdf"), "utf8"), "%PDF-1.4 part two, revised");
+  assert.equal(fs.readFileSync(path.join(fixture.library, "web", "pinned.pdf"), "utf8"), "%PDF-1.4 pinned edition");
+  assert.equal(library.status()[0].edition, "2026-10-01");
+
+  // The server that breaks on HEAD was checked through a GET of the first byte.
+  assert.ok(remote.requests.includes("HEAD /docs/pinned.pdf") && remote.requests.includes("GET /docs/pinned.pdf"), remote.requests.join("\n"));
+
+  // A damaged or replaced copy is noticed by verify, by check, and repaired by a plain update.
+  const partOne = path.join(fixture.library, "web", "part-01.pdf");
+  fs.appendFileSync(partOne, "!");
+  assert.deepEqual((await library.verify(["library/web/part-01.pdf"])).map((row) => row.status), ["mismatch"]);
+  assert.equal(library.status()[1].verifiedAt, null, "a failed verification is not shown as verified");
+  const damaged = await library.check(["library/web/part-01.pdf"]);
+  assert.equal(damaged[0].verdict, "damaged");
+  assert.match(formatLibraryRows(damaged), /DAMAGED: the file differs/);
+  fs.appendFileSync(path.join(fixture.library, "web", "pinned.pdf"), "!");
+  assert.equal((await library.check(["library/web/pinned.pdf"]))[0].verdict, "damaged", "a pinned file that lost its hash is fetched again");
+  // The server offers the newer, unwanted edition: the download does not match the pin and is discarded.
+  assert.equal((await library.update(["library/web/pinned.pdf"])).items[0].action, "failed");
+  remote.docs["/docs/pinned.pdf"] = { bytes: Buffer.from("%PDF-1.4 pinned edition"), modified: "Mon, 02 Mar 2026 10:00:00 GMT", etag: '"pinned-1"', headFails: true };
+  const repaired = await library.update(["library/web/part-01.pdf", "library/web/pinned.pdf"]);
+  assert.deepEqual(repaired.items.map((row) => row.action), ["downloaded", "downloaded"]);
+  assert.equal(fs.readFileSync(partOne, "utf8"), "%PDF-1.4 part one");
+  assert.deepEqual((await library.verify(["library/web/part-01.pdf"])).map((row) => row.status), ["ok"]);
+
+  // Before its first download a pinned file says so, instead of "checksum unknown".
+  const fresh = createLibrary(makeConfig({ downloads: [{ file: "web/other.pdf", url: `${remote.url}/docs/guide.pdf`, source: "library", checksum: `sha256:${"cd".repeat(32)}` }] }), quiet);
+  fs.writeFileSync(path.join(fixture.library, "web", "other.pdf"), "by hand");
+  assert.match(formatLibraryRows(fresh.status()), /other\.pdf +file +other\.pdf .* checksum pinned, not yet verified/);
+  fs.rmSync(path.join(fixture.library, "web"), { recursive: true, force: true });
 });
 
 test("verify recomputes checksums and notices a changed file", async () => {

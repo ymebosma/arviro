@@ -96,6 +96,7 @@ function verdictOf(check) {
   const remote = check.remote ? `${check.remote.file}${check.remote.bytes ? ` (${bytes(check.remote.bytes)})` : ""}${check.kind === "map" && check.remote.modifiedAt ? ` dated ${day(check.remote.modifiedAt)}` : ""}` : "";
   if (check.verdict === "newer") return { text: `NEWER: ${remote}`, bad: true };
   if (check.verdict === "missing") return { text: `AVAILABLE: ${remote}`, bad: true };
+  if (check.verdict === "damaged") return { text: "DAMAGED: differs from what was downloaded; Update now downloads it again", bad: true };
   if (check.verdict === "current") return { text: "up to date", bad: false };
   if (check.verdict === "unknown") return { text: "cannot tell whether a newer version exists", bad: false };
   if (check.verdict === "error") return { text: `ERROR: ${check.error}`, bad: true };
@@ -106,7 +107,7 @@ function renderDownloads(overview) {
   const managed = new Set(overview.downloads.map((item) => `${item.kind}:${item.id}`));
   const rows = overview.library.map((row) => {
     const facts = row.exists
-      ? [row.file, bytes(row.bytes), `${row.kind === "zim" ? "edition" : "dated"} ${row.edition || "?"}`, age(row.ageDays), row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : "checksum unknown"]
+      ? [row.file, bytes(row.bytes), `${row.kind === "zim" ? "edition" : "dated"} ${row.edition || "?"}`, age(row.ageDays), row.verifiedAt ? `checksum verified ${day(row.verifiedAt)}` : row.pinned ? "checksum pinned, not yet verified" : "checksum unknown"]
       : ["not downloaded yet"];
     const verdict = verdictOf(state.lastCheck?.[`${row.kind}:${row.id}`]);
     return el("tr", {}, [
@@ -114,14 +115,23 @@ function renderDownloads(overview) {
       el("td", { class: "label" }, [el("b", { text: row.id }), el("span", { class: "muted", text: ` ${row.kind}` })]),
       el("td", {}, [
         el("div", { text: facts.join("  ·  ") }),
+        row.note ? el("div", { class: "muted", text: row.note }) : "",
         row.managed ? "" : el("div", { class: "muted", text: "not in the download list; it stays as it is" }),
         verdict ? el("div", { class: verdict.bad ? "bad" : "ok", text: verdict.text }) : "",
       ]),
       el("td", {}, managed.has(`${row.kind}:${row.id}`) ? el("button", { class: "secondary small", type: "button", onclick: () => removeDownload(row.id) }, "Remove") : ""),
     ]);
   });
-  $("#downloads tbody").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { class: "muted", text: "Nothing yet. Add an encyclopedia or a map below." }))]));
-  $("#download-dirs").textContent = `ZIM files go to ${overview.defaults.zimDir}; map extracts to ${overview.defaults.mapsDir} unless maps.regions says otherwise. After an update the index runs by itself; restart the server after a new ZIM edition.`;
+  $("#downloads tbody").replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { class: "muted", text: "Nothing yet. Add an encyclopedia, a map or a file below." }))]));
+  $("#download-dirs").textContent = `ZIM files go to ${overview.defaults.zimDir}; map extracts to ${overview.defaults.mapsDir} unless maps.regions says otherwise; files go into the document folder you choose. After an update the index runs by itself; restart the server after a new ZIM edition.`;
+  // The file form needs a document folder to put the file in.
+  const folders = overview.sources.filter((source) => source.type === "documents");
+  const select = $("#file-source");
+  const chosen = select.value;
+  select.replaceChildren(...folders.map((source) => el("option", { value: source.id, text: source.id })));
+  if (folders.some((source) => source.id === chosen)) select.value = chosen;
+  $("#file-form").classList.toggle("hidden", !folders.length);
+  $("#file-note").classList.toggle("hidden", folders.length > 0);
   const hasDownloads = overview.downloads.length > 0;
   $("#library-check").disabled = !hasDownloads;
   $("#library-update").disabled = !hasDownloads;
@@ -448,6 +458,15 @@ function init() {
     $("#source-path").value = state.folder.path;
     $("#source-path").dispatchEvent(new Event("change"));
     $("#folder-dialog").close();
+  });
+  $("#file-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    change("downloads", { file: $("#file-path").value.trim(), source: $("#file-source").value, url: $("#file-url").value.trim(), checksum: $("#file-checksum").value.trim(), note: $("#file-note-text").value.trim() });
+  });
+  $("#file-url").addEventListener("change", () => {
+    // The file name of the URL is a fair default for the path.
+    if ($("#file-path").value) return;
+    try { $("#file-path").value = decodeURIComponent(new URL($("#file-url").value.trim()).pathname.split("/").pop() || ""); } catch {}
   });
   $("#catalogue-form").addEventListener("submit", (event) => { event.preventDefault(); searchCatalogue(); });
   $("#catalogue-kind").addEventListener("change", searchCatalogue);
