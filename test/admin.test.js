@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -12,7 +13,7 @@ import { loadConfig, normalizeConfig } from "../src/config.js";
 import { addFileDownload, addMapDownload, addZimDownload, homeRelative, readRawConfig, removeDownload, setDocumentSource, writeRawConfig } from "../src/configfile.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
-import { adviceFor, checkEnvironment, hasModel } from "../src/setup.js";
+import { adviceFor, checkEnvironment, hasModel, isEmbeddingModel, recommendChatModel } from "../src/setup.js";
 import { makeFixture, startFakeDownloads, startFakeKiwixTools, WIKIPEDIA_BOOK } from "./helpers.js";
 
 const fixture = makeFixture();
@@ -41,6 +42,34 @@ function startFakeOllama() {
         res.writeHead(200, { "content-type": "application/x-ndjson" });
         const last = request.messages.at(-1);
         const line = (message, done = false) => res.write(`${JSON.stringify({ model: request.model, message, done })}\n`);
+        const finish = () => { line({ role: "assistant", content: "" }, true); res.end(); };
+        const search = (query) => { line({ role: "assistant", content: "", tool_calls: [{ function: { name: "search_library", arguments: { source: "library", query } } }] }); finish(); };
+        const fromArviro = String(last.content || "").startsWith("(Note from Arviro");
+        // "rescuer" searches, then ends its turn without an answer; asked again with excerpts, it answers.
+        if (request.model === "rescuer") {
+          if (last.role === "user" && !fromArviro) return search(last.content);
+          if (last.role === "tool") { line({ role: "assistant", content: "<tool_call>{\"name\": \"search_library\"}</tool_call>" }); return finish(); }
+          line({ role: "assistant", content: "From the excerpts: cool it for ten minutes." });
+          return finish();
+        }
+        // "overthinker" thinks on and on while it may think; told to stop, it answers.
+        if (request.model === "overthinker") {
+          if (request.think === false) { line({ role: "assistant", content: "Short answer." }); return finish(); }
+          for (let index = 0; index < 50; index += 1) line({ role: "assistant", content: "", thinking: "hmm " });
+          return finish();
+        }
+        // "searcher" searches as long as it gets tools, each time with other words.
+        if (request.model === "searcher") {
+          if (request.tools) return search(`burn ${request.messages.length}`);
+          line({ role: "assistant", content: "Final answer from what I found." });
+          return finish();
+        }
+        // "citer" searches once and then names a document and a title it never saw.
+        if (request.model === "citer") {
+          if (last.role === "user") return search(last.content);
+          line({ role: "assistant", content: "Cool it (manuals/first-aid.md, library/manuals/first-aid.md, manuals/made-up.md).\n\nSources: First aid at home; Imaginary Guide (library)" });
+          return finish();
+        }
         // A "slow" model thinks forever: the connection stays open until the client gives up.
         if (request.model === "slow") return line({ role: "assistant", content: "", thinking: "Hmm" });
         // A "looping" model thinks until num_predict cuts it off, without any answer.
@@ -373,6 +402,62 @@ test("a file from the web can be added to and removed from the download list", a
   assert.throws(() => removeDownload(raw, "docs/a/part-2.pdf"), /not in the download list/);
 });
 
+test("Environment suggests a chat model for this computer's memory, and the page can pull it", async () => {
+  const GB = 1024 ** 3;
+  assert.deepEqual([8, 16, 31, 32, 128].map((size) => recommendChatModel(size * GB).model), ["granite4.2:3b", "granite4.2", "granite4.2", "qwen3.6", "qwen3.6"]);
+  assert.equal(recommendChatModel(24 * GB).gigabytes, 24);
+  assert.equal(isEmbeddingModel("qwen3-embedding:0.6b"), true);
+  assert.equal(isEmbeddingModel("granite4.2"), false);
+
+  const config = loadConfig(configPath);
+  const arviro = createArviro(config, {});
+  try {
+    const withOllama = (extra) => ({ ...config, embedding: { provider: "ollama", url: ollama.url(), model: "test-embed", dimensions: 8 }, chat: { ...config.chat, ...extra } });
+    const before = [...ollama.models];
+    // Only an embedding model in Ollama: no chat model yet, with a suggestion for 16 GB.
+    ollama.models.splice(0, ollama.models.length, "test-embed:latest");
+    let checks = await checkEnvironment(withOllama({}), arviro.status(), { platform: "darwin", memoryBytes: 16 * GB });
+    let chatCheck = checks.find((check) => check.id === "chat-model");
+    assert.equal(chatCheck.ok, false);
+    assert.match(chatCheck.detail, /none yet; for this computer \(16 GB\): 16 to 31 GB: Granite 4\.2/);
+    assert.equal(chatCheck.advice.command, "ollama pull granite4.2");
+    assert.equal(chatCheck.fix, "ollama-pull-chat");
+    // A chat model is there: fine, with the suggestion when it is another one.
+    ollama.models.push("chatty:latest");
+    checks = await checkEnvironment(withOllama({}), arviro.status(), { platform: "darwin", memoryBytes: 64 * GB });
+    chatCheck = checks.find((check) => check.id === "chat-model");
+    assert.equal(chatCheck.ok, true);
+    assert.equal(chatCheck.detail, "chatty:latest; for this computer (64 GB) Arviro suggests qwen3.6");
+    // chat.model that is not installed.
+    checks = await checkEnvironment(withOllama({ model: "missing:7b" }), arviro.status(), { platform: "darwin", memoryBytes: 64 * GB });
+    chatCheck = checks.find((check) => check.id === "chat-model");
+    assert.equal(chatCheck.ok, false);
+    assert.equal(chatCheck.advice.command, "ollama pull missing:7b");
+    ollama.models.splice(0, ollama.models.length, ...before);
+  } finally {
+    arviro.close();
+  }
+
+  // The page pulls chat.model through the same job as the embedding model.
+  const modelsBefore = [...ollama.models];
+  const other = await startServer({}, { embedding: { provider: "ollama", url: ollama.url(), model: "test-embed" }, chat: { model: "fresh-chat:8b" } });
+  try {
+    await api("jobs", { method: "POST", body: { job: "ollama-pull-chat" }, base: other.url });
+    let job;
+    do { job = (await api("jobs", { base: other.url })).body.job; await new Promise((resolve) => setTimeout(resolve, 50)); } while (job.status === "running");
+    assert.equal(job.status, "done", job.error);
+    assert.equal(job.name, "pull fresh-chat:8b");
+    assert.ok(ollama.models.includes("fresh-chat:8b:latest"));
+    const models = (await api("chat/models", { base: other.url })).body;
+    assert.equal(models.default, "fresh-chat:8b");
+    assert.ok(["qwen3.6", "granite4.2", "granite4.2:3b"].includes(models.suggested));
+  } finally {
+    await other.close();
+    ollama.models.splice(0, ollama.models.length, ...modelsBefore);
+  }
+  writeConfig();
+});
+
 test("the page can install kiwix-tools itself", async () => {
   const started = await api("jobs", { method: "POST", body: { job: "kiwix-tools" } });
   assert.equal(started.status, 202);
@@ -419,7 +504,11 @@ test("the chat answers with the library tools through Ollama", async () => {
     const { status, events } = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }] });
     assert.equal(status, 200);
     const types = events.map((event) => event.type);
-    assert.deepEqual(types, ["thinking", "thinking", "message", "tool", "toolResult", "message", "token", "token", "message", "done"], JSON.stringify(events));
+    assert.deepEqual(types, ["thinking", "thinking", "message", "tool", "toolResult", "message", "token", "token", "message", "turn", "done"], JSON.stringify(events));
+    const turn = events.find((event) => event.type === "turn");
+    assert.deepEqual(turn.seen, [{ source: "library", path: "manuals/first-aid.md", title: "First aid at home" }]);
+    assert.deepEqual(turn.read, []);
+    assert.equal(turn.looked, true);
     assert.equal(events.filter((event) => event.type === "thinking").map((event) => event.text).join(""), "The user asks about the library; I should search.");
     const tool = events.find((event) => event.type === "tool");
     assert.deepEqual(tool, { type: "tool", name: "search_library", args: { source: "library", query: "How long should I cool a burn?" } });
@@ -494,6 +583,93 @@ test("a model that thinks for too long is cut off, and thinking can be switched 
   }
   writeConfig();
 }, { timeout: 30_000 });
+
+test("the chat helps small models: a last round without tools, a second try, a thinking budget and a source check", async () => {
+  const other = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", maxRounds: 2, thinkBudget: 10 } });
+  const types = (events) => events.map((event) => event.type);
+  const answerOf = (events) => events.filter((event) => event.type === "message" && event.message.role === "assistant").at(-1).message.content;
+  try {
+    // A model that would search forever gets a last round without tools and a note to answer.
+    ollama.chats.length = 0;
+    const searcher = await chatTurn(other.url, { messages: [{ role: "user", content: "burns?" }], model: "searcher" });
+    assert.equal(searcher.status, 200);
+    assert.equal(ollama.chats.length, 3);
+    assert.ok(ollama.chats[1].tools, "the rounds before the last have tools");
+    assert.equal(ollama.chats[2].tools, undefined, "the last round has none");
+    assert.match(ollama.chats[2].messages.at(-1).content, /^\(Note from Arviro, not the user: you have used all library lookups/);
+    assert.equal(answerOf(searcher.events), "Final answer from what I found.");
+    assert.ok(!searcher.events.some((event) => event.type === "message" && /Note from Arviro/.test(event.message.content)), "the note is not kept in the conversation");
+
+    // A model that ends its turn with a lookup written out as text is asked once more, with the excerpts and without tools.
+    ollama.chats.length = 0;
+    const rescued = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "rescuer" });
+    assert.equal(rescued.status, 200);
+    assert.ok(types(rescued.events).includes("retry"));
+    assert.match(rescued.events.find((event) => event.type === "note").text, /asked once more/);
+    assert.equal(answerOf(rescued.events), "From the excerpts: cool it for ten minutes.");
+    const third = ollama.chats.at(-1);
+    assert.equal(third.tools, undefined);
+    assert.equal(third.think, false);
+    assert.match(third.messages.at(-1).content, /^\(Note from Arviro, not the user: you cannot look anything else up[\s\S]*lukewarm running water/);
+    assert.equal(rescued.events.find((event) => event.type === "turn").rescued, true);
+
+    // Thinking past chat.thinkBudget is stopped; the model goes on without thinking and may still search.
+    ollama.chats.length = 0;
+    const overthinker = await chatTurn(other.url, { messages: [{ role: "user", content: "think" }], model: "overthinker" });
+    assert.equal(overthinker.status, 200);
+    assert.match(overthinker.events.find((event) => event.type === "note").text, /stopped after 10 tokens/);
+    assert.ok(types(overthinker.events).filter((type) => type === "thinking").length <= 11);
+    assert.equal(ollama.chats[1].think, false);
+    assert.ok(ollama.chats[1].tools, "nothing was looked up yet, so the tools stay");
+    assert.match(ollama.chats[1].messages.at(-1).content, /Search the library now if you need to/);
+    assert.equal(answerOf(overthinker.events), "Short answer.");
+    assert.equal(overthinker.events.find((event) => event.type === "turn").thinkCut, true);
+
+    // Sources it never saw are pointed out; the ones it saw are fine, with or without the source id in front.
+    const citer = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "citer" });
+    const turn = citer.events.find((event) => event.type === "turn");
+    assert.deepEqual(turn.unverified, ["manuals/made-up.md", "Imaginary Guide (library)"]);
+    assert.match(answerOf(citer.events), /\[Arviro did not find "manuals\/made-up\.md", "Imaginary Guide \(library\)" among the documents searched or read in this conversation/);
+  } finally {
+    await other.close();
+  }
+  writeConfig();
+});
+
+test("arviro eval asks each model the questions through the chat and measures the answers", async () => {
+  writeConfig({ chat: { url: ollama.url(), maxRounds: 2 } });
+  const questions = path.join(fixture.root, "eval-questions.json");
+  fs.writeFileSync(questions, JSON.stringify({ questions: [
+    { question: "How long should I cool a burn?", source: "library", facts: [["based on the library"], ["ten minutes"]] },
+    { question: "How long should I cool a burn, please?", source: "wikipedia" },
+  ] }));
+  const saveTo = path.join(fixture.root, "eval-out");
+  const cli = fileURLToPath(new URL("../bin/arviro.js", import.meta.url));
+  const { code, stdout, stderr } = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "chatty:latest,citer,rescuer", "--save", saveTo], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
+  });
+  assert.equal(code, 0, stderr);
+  assert.match(stdout, /\nchatty:latest\n +1\. .*searched library +facts 1\/2 \(missing: ten minutes\)/);
+  assert.match(stdout, /\n +2\. .*searched library +WRONG SOURCE/);
+  assert.match(stdout, /\nciter\n +1\. .*MADE-UP SOURCE: manuals\/made-up\.md; Imaginary Guide \(library\)/);
+  assert.match(stdout, /\nrescuer\n +1\. .*second try/);
+  assert.match(stdout, /\nmodel +questions +answered +facts +searched +right source/);
+  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +4 +0 +0 /);
+  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +2 +0 /);
+  const files = fs.readdirSync(saveTo).sort();
+  assert.equal(files.length, 3);
+  const lines = fs.readFileSync(path.join(saveTo, files.find((name) => name.endsWith("-citer.jsonl"))), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines[0].summary.madeUpSources, 4);
+  assert.match(lines[1].answer, /Imaginary Guide/);
+  assert.deepEqual(lines[1].searched, ["library"]);
+  // Without a model there is nothing to ask.
+  const none = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));
+  });
+  assert.equal(none.code, 2);
+  assert.match(none.stderr, /Name the model\(s\) to ask/);
+  writeConfig();
+});
 
 test("the assistant's name is a setting, not the product name", () => {
   assert.equal(fillAssistantName("You are {{assistantName}}.", "Bieb"), "You are Bieb.");

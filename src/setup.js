@@ -1,6 +1,7 @@
 // Environment checks for the doctor command and the admin page: what is installed, what is missing,
 // and what to do about it on this platform.
 import fs from "node:fs";
+import os from "node:os";
 
 const OLLAMA_URL = "https://ollama.com/download";
 const KIWIX_URL = "https://download.kiwix.org/release/kiwix-tools/";
@@ -38,11 +39,11 @@ export function adviceFor(tool, platform = process.platform) {
 }
 
 /** Pull a model through Ollama's streaming /api/pull. */
-export async function pullModel(embedding, line, fetchImpl = fetch) {
-  const response = await fetchImpl(`${embedding.url}/api/pull`, {
+export async function pullModel({ url, model }, line, fetchImpl = fetch) {
+  const response = await fetchImpl(`${url}/api/pull`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: embedding.model, stream: true }),
+    body: JSON.stringify({ model, stream: true }),
   });
   if (!response.ok) throw new Error(`Ollama answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
   let buffered = "";
@@ -67,7 +68,23 @@ export async function pullModel(embedding, line, fetchImpl = fetch) {
       }
     }
   }
-  return { model: embedding.model };
+  return { model };
+}
+
+/** Embedding models are not chat models; Ollama lists both. */
+export const isEmbeddingModel = (name) => /embed|bge|minilm|e5-|nomic/i.test(String(name));
+
+const GB = 1024 ** 3;
+/**
+ * A chat model that calls tools well enough for the library, by the memory of this computer. The models are ones that
+ * Survival LLM measured with library tools through Ollama (October 2026); `arviro eval` measures them on your own
+ * library and language.
+ */
+export function recommendChatModel(memoryBytes = os.totalmem()) {
+  const gigabytes = Math.round(memoryBytes / GB);
+  if (memoryBytes >= 32 * GB) return { model: "qwen3.6", gigabytes, reason: "32 GB or more: Qwen 3.6, good with tools and in many languages" };
+  if (memoryBytes >= 16 * GB) return { model: "granite4.2", gigabytes, reason: "16 to 31 GB: Granite 4.2 (8B), which searches and reads reliably" };
+  return { model: "granite4.2:3b", gigabytes, reason: "less than 16 GB: Granite 4.2 3B, small but it does use the tools" };
 }
 
 /** Names of the models Ollama has, or null when it is not reachable. */
@@ -91,7 +108,7 @@ export function hasModel(names, model) {
  * @param {object} config  normalized configuration
  * @param {object} status  the result of arviro.status()
  */
-export async function checkEnvironment(config, status, { fetchImpl = fetch, platform = process.platform, nodeVersion = process.version } = {}) {
+export async function checkEnvironment(config, status, { fetchImpl = fetch, platform = process.platform, nodeVersion = process.version, memoryBytes = os.totalmem() } = {}) {
   const checks = [];
   const check = (id, label, ok, detail, extra = {}) => checks.push({ id, label, ok, detail, ...extra });
 
@@ -120,8 +137,10 @@ export async function checkEnvironment(config, status, { fetchImpl = fetch, plat
   if (config.kiwix.books.length || config.library.downloads.some((item) => item.kind === "zim")) check("kiwix-serve", "kiwix-serve (reads ZIM files)", Boolean(config.tools.kiwixServe), config.tools.kiwixServe || "not found", config.tools.kiwixServe ? {} : { advice: adviceFor("kiwix-serve", platform), fix: "kiwix-tools" });
   if (config.sources.maps) check("osmium", "osmium (indexes map data)", Boolean(config.tools.osmium), config.tools.osmium || "not found", config.tools.osmium ? {} : { advice: adviceFor("osmium", platform) });
 
+  let ollamaNames;
   if (config.embedding.provider === "ollama") {
-    const names = await ollamaModels(config.embedding.url, fetchImpl);
+    ollamaNames = await ollamaModels(config.embedding.url, fetchImpl);
+    const names = ollamaNames;
     if (names === null) check("ollama", "Ollama", false, `not reachable at ${config.embedding.url}`, { advice: adviceFor("ollama", platform) });
     else {
       check("ollama", "Ollama", true, config.embedding.url);
@@ -130,6 +149,25 @@ export async function checkEnvironment(config, status, { fetchImpl = fetch, plat
     }
   } else {
     check("embeddings", "embeddings", true, "disabled; only literal matches are found");
+  }
+
+  // The Chat tab needs a chat model in the Ollama of the chat.
+  const chatUrl = config.chat.url || (config.embedding.provider === "ollama" ? config.embedding.url : null);
+  if (chatUrl) {
+    const names = chatUrl === config.embedding.url && ollamaNames !== undefined ? ollamaNames : await ollamaModels(chatUrl, fetchImpl);
+    if (names !== null) {
+      const chatModels = names.filter((name) => !isEmbeddingModel(name));
+      const suggestion = recommendChatModel(memoryBytes);
+      const pull = (model) => ({ advice: { text: "Pull it.", command: `ollama pull ${model}` }, fix: "ollama-pull-chat" });
+      if (config.chat.model) {
+        const present = hasModel(names, config.chat.model);
+        check("chat-model", "chat model", present, present ? config.chat.model : `${config.chat.model} (chat.model) is not installed`, present ? {} : pull(config.chat.model));
+      } else if (chatModels.length) {
+        check("chat-model", "chat model", true, `${chatModels.slice(0, 4).join(", ")}${chatModels.length > 4 ? ", …" : ""}${hasModel(chatModels, suggestion.model) ? "" : `; for this computer (${suggestion.gigabytes} GB) Arviro suggests ${suggestion.model}`}`);
+      } else {
+        check("chat-model", "chat model", false, `none yet; for this computer (${suggestion.gigabytes} GB): ${suggestion.reason}`, { advice: { text: "Pull a chat model that can call tools.", command: `ollama pull ${suggestion.model}` }, fix: "ollama-pull-chat" });
+      }
+    }
   }
 
   const { index } = status;

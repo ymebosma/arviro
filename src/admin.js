@@ -13,7 +13,7 @@ import { addFileDownload, addMapDownload, addZimDownload, homeRelative, readRawC
 import { createEmbedder } from "./embeddings.js";
 import { buildIndex } from "./indexer.js";
 import { createLibrary, formatBytes } from "./library.js";
-import { checkEnvironment, pullModel } from "./setup.js";
+import { checkEnvironment, hasModel, pullModel, recommendChatModel } from "./setup.js";
 import { UserInputError } from "./text.js";
 import { installKiwixTools, KIWIX_TOOLS_URL } from "./tools.js";
 
@@ -167,6 +167,12 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
         return summary;
       });
     }
+    if (job === "ollama-pull-chat") {
+      const chatUrl = current.chat.url || (current.embedding.provider === "ollama" ? current.embedding.url : null);
+      if (!chatUrl) throw new UserInputError("The chat needs Ollama: set chat.url, or embedding.provider to ollama.");
+      const model = current.chat.model || recommendChatModel().model;
+      return jobs.start(`pull ${model}`, (line) => pullModel({ url: chatUrl, model }, line, fetchImpl));
+    }
     if (job === "ollama-pull") {
       if (current.embedding.provider !== "ollama") throw new UserInputError("Embeddings are disabled in the configuration.");
       return jobs.start(`pull ${current.embedding.model}`, (line) => pullModel(current.embedding, line, fetchImpl));
@@ -192,7 +198,10 @@ export function createAdmin({ getArviro, replace, guard, version, log = () => {}
       if (current.embedding.provider !== "ollama" && !current.chat.url) return { status: 200, body: { models: [], default: current.chat.model || null, url: null, error: "The chat needs Ollama: set chat.url, or embedding.provider to ollama." } };
       try {
         const models = await chat.models();
-        return { status: 200, body: { models, default: current.chat.model || models[0] || null, url: current.chat.url || current.embedding.url } };
+        // Without chat.model: the model Arviro suggests for this computer when it is there, else the first one.
+        const suggested = recommendChatModel().model;
+        const fallback = models.find((name) => hasModel([name], suggested)) || models[0] || null;
+        return { status: 200, body: { models, default: current.chat.model || fallback, suggested, url: current.chat.url || current.embedding.url } };
       } catch (error) {
         return { status: 200, body: { models: [], default: current.chat.model || null, url: current.chat.url || current.embedding.url, error: "Ollama is not reachable; see Environment." } };
       }

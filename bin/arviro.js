@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 // Command line entry point: run the MCP server, build the index, or try a search by hand.
 import fs from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createArviro } from "../src/arviro.js";
 import { ConfigError, loadConfig, userBinDir } from "../src/config.js";
 import { createEmbedder } from "../src/embeddings.js";
+import { formatRow, formatSummary, loadEvalQuestions, runEval, saveEval } from "../src/eval.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
 import { buildIndex } from "../src/indexer.js";
 import { createLibrary, formatLibraryRows, formatUpdate, formatVerify } from "../src/library.js";
 import { createMcpServer } from "../src/mcp.js";
 import { installService, openInBrowser, serviceStatus, stableNodePath, uninstallService } from "../src/service.js";
-import { adviceFor, checkEnvironment, hasModel, HELPER_TOOLS, ollamaModels, pullModel } from "../src/setup.js";
+import { adviceFor, checkEnvironment, hasModel, HELPER_TOOLS, isEmbeddingModel, ollamaModels, pullModel, recommendChatModel } from "../src/setup.js";
 import { ServiceError, UserInputError } from "../src/text.js";
 import { installKiwixTools } from "../src/tools.js";
 
@@ -33,6 +35,7 @@ Usage: arviro <command> [options]
   service install            start Arviro at login and keep it running; run the library update weekly   [--no-open]
   service uninstall          undo that
   service status             show whether the service is installed
+  eval <questions.json>      ask a list of questions to chat models and measure the answers  [--model a,b] [--save <folder>]
   library status             show the ZIM files and map extracts in the library and how old they are
   library check [name...]    ask the download servers whether newer editions exist
   library update [name...]   download new or newer editions, check their checksums and update the index
@@ -159,6 +162,14 @@ async function setup(config) {
         problem("embedding model", `${config.embedding.model} could not be pulled (${error.message}).  ollama pull ${config.embedding.model}`);
       }
     }
+    // A chat model is gigabytes: setup suggests one for this computer, and leaves the download to the owner.
+    if (names !== null) {
+      const chatModels = names.filter((name) => !isEmbeddingModel(name));
+      const suggestion = recommendChatModel();
+      if (config.chat.model && !hasModel(names, config.chat.model)) problem("chat model", `${config.chat.model} (chat.model) is not installed.  ollama pull ${config.chat.model}`);
+      else if (config.chat.model || chatModels.length) print(`ok       chat model: ${config.chat.model || chatModels[0]}`);
+      else problem("chat model", `none yet, for the Chat tab. For this computer (${suggestion.gigabytes} GB): ${suggestion.reason}.  ollama pull ${suggestion.model}`);
+    }
   }
 
   print(problems ? `\n${problems} thing(s) to do by hand; the admin page shows them too.` : "\nEverything Arviro needs is there.");
@@ -186,6 +197,38 @@ async function service(config, rest, options) {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     if (config.server.admin && !options["no-open"]) openInBrowser(`${url}/admin/`);
+  }
+  return 0;
+}
+
+/**
+ * `arviro eval <questions.json>`: the questions go to each model through the Chat tab's code; one line per question,
+ * a table per model at the end, and every answer in a JSON-lines file under dataDir/evals (or --save).
+ */
+async function evaluate(config, rest, options) {
+  const [file] = rest;
+  if (!file) throw new UserInputError("Usage: arviro eval <questions.json> [--model a,b] [--save <folder>]. examples/eval.example.json shows the format.");
+  const questions = loadEvalQuestions(file);
+  const models = String(options.model || config.chat.model || "").split(",").map((name) => name.trim()).filter(Boolean);
+  if (!models.length) throw new UserInputError("Name the model(s) to ask: --model qwen3:8b,granite4.2:8b (or set chat.model).");
+  const arviro = createArviro(config, { log });
+  try {
+    const results = await runEval({
+      getArviro: () => arviro,
+      guard: createGuard(config.guard),
+      version: VERSION,
+      models,
+      questions,
+      log,
+      onRow: (row, index) => {
+        if (index === 0) print(`\n${row.model}`);
+        print(formatRow(row, index));
+      },
+    });
+    print(`\n${formatSummary(results)}`);
+    for (const saved of saveEval(results, options.save ? path.resolve(options.save) : path.join(config.dataDir, "evals"))) print(`answers: ${saved}`);
+  } finally {
+    arviro.close();
   }
   return 0;
 }
@@ -233,6 +276,7 @@ async function main() {
   if (command === "setup") { process.exitCode = await setup(config); return; }
   if (command === "service") { process.exitCode = await service(config, rest, options); return; }
   if (command === "library") { process.exitCode = await library(config, rest, options); return; }
+  if (command === "eval") { process.exitCode = await evaluate(config, rest, options); return; }
   if (command === "index") {
     const summary = await buildIndex(config, createEmbedder(config.embedding), { log, full: Boolean(options.full) });
     return print(summary);
