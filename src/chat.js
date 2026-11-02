@@ -8,7 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "./mcp.js";
 import { isEmbeddingModel } from "./setup.js";
-import { UserInputError } from "./text.js";
+import { normalizeComparable, STOPWORDS, UserInputError } from "./text.js";
 
 const DEFAULT_PROMPT_FILE = new URL("../examples/system-prompt.en.md", import.meta.url);
 const MAX_MESSAGE_CHARS = 20_000;
@@ -169,6 +169,79 @@ function trimPiece(raw) {
   return piece.slice(0, end);
 }
 
+/** The words of a title or file name that say what it is: lowercase, without accents, punctuation and stopwords. */
+// Words that say where something is in a document, or what kind of thing it is, not which document it is.
+const POINTER_WORDS = new Set(["pagina", "paginas", "page", "pages", "p", "pp", "blz", "s", "line", "lines", "regel", "regels", "seite", "seiten", "zeile"]);
+const GENERIC_WORDS = new Set([
+  "pdf", "artikel", "artikelen", "article", "articles", "entry", "lemma", "sectie", "section", "hoofdstuk", "chapter", "kapitel",
+  "document", "documenten", "documents", "bron", "bronnen", "source", "sources", "quelle", "versie", "edition", "editie",
+  "nederlandstalig", "nederlandstalige", "nederlands", "dutch", "engelstalig", "engelstalige", "engels", "english", "duits", "duitstalig", "german", "frans", "french",
+]);
+
+function contentWords(text) {
+  return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !POINTER_WORDS.has(word) && !GENERIC_WORDS.has(word)));
+}
+
+/** The parts of a text between quotation marks ("Gouda", “Making bread”, 'Water'). One pass, so linear. */
+function quotedParts(text) {
+  const closers = { "\"": "\"", "“": "”", "„": "”", "'": "'", "‘": "’", "«": "»" };
+  const parts = [];
+  let open = null;
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (open === null && closers[character]) { open = closers[character]; start = index + 1; }
+    else if (open !== null && character === open) { parts.push(text.slice(start, index)); open = null; }
+  }
+  return parts;
+}
+
+/** The text without what is between brackets: "Pagina 6-7 (Principles of gasification)" becomes "Pagina 6-7 ". */
+function withoutBrackets(text) {
+  let depth = 0;
+  let kept = "";
+  for (const character of text) {
+    if (character === "(" || character === "[") depth += 1;
+    else if ((character === ")" || character === "]") && depth > 0) depth -= 1;
+    else if (!depth) kept += character;
+  }
+  return kept;
+}
+
+/**
+ * Whether an item only points into a document ("Werking: Pagina 6-7 (Principles of solid fuel gasification)",
+ * "regel 12"): a page or line reference and nothing that names a document, besides a short label and brackets.
+ */
+function isPointer(item) {
+  const words = normalizeComparable(withoutBrackets(item)).split(" ").filter(Boolean);
+  if (!words.some((word) => POINTER_WORDS.has(word))) return false;
+  const colon = item.indexOf(":");
+  const label = colon > 0 && colon < 40 ? contentWords(item.slice(0, colon)) : new Set();
+  return [...contentWords(withoutBrackets(item))].every((word) => /^\d+$/.test(word) || label.has(word));
+}
+
+/**
+ * Whether a sources item names a known document by its words: (nearly) all words of its title or file name are in
+ * the item ("WHO Technical Note 05: Emergency treatment of drinking-water (pages 1-2)" for the file
+ * who-technical-note-05-emergency-treatment-drinking-water.pdf), or the item is a shortened title of two words or more.
+ */
+function namesByWords(itemWords, knownNames, sourceWords) {
+  if (!itemWords.size) return false;
+  return knownNames.some((names) => {
+    let shared = 0;
+    for (const word of names) if (itemWords.has(word)) shared += 1;
+    if (names.size && shared >= Math.max(1, Math.ceil(names.size * 0.8))) {
+      // A title of one or two words fits inside many made-up ones ("Water" in "Water purification handbook"):
+      // then the item may add nothing but source names and page numbers.
+      if (names.size > 2) return true;
+      return [...itemWords].every((word) => names.has(word) || sourceWords.has(word) || /^\d+$/.test(word));
+    }
+    // A shortened title: two or more of its words, and nothing else but source names and numbers.
+    const meaningful = [...itemWords].filter((word) => !sourceWords.has(word) && !/^\d+$/.test(word));
+    return meaningful.length >= 2 && meaningful.every((word) => names.has(word));
+  });
+}
+
 /**
  * The references in an answer that no tool showed the model: paths that were never in a search result or read,
  * and items of a closing "Sources:" line that name no known document, title or source.
@@ -179,7 +252,10 @@ export function checkCitations(answer, ledger) {
   const known = ledger.all();
   const paths = known.filter((item) => item.path).map((item) => normalPath(item.path));
   const titles = known.map((item) => String(item.title || "").toLowerCase()).filter((title) => title.length >= 3);
+  // The words of each title and each file name, for an item that cites a document in its own words.
+  const knownNames = known.flatMap((item) => [contentWords(item.title || ""), contentWords(String(item.path || "").split("/").at(-1).replace(/\.[a-z0-9]{1,5}$/i, ""))]).filter((names) => names.size);
   const sourceIds = new Set([...ledger.sources, ...known.map((item) => item.source)].map((id) => id.toLowerCase()));
+  const sourceWords = new Set([...sourceIds].flatMap((id) => normalizeComparable(id).split(" ")));
   const knownPath = (piece) => {
     const wanted = normalPath(piece);
     return paths.some((candidate) => candidate === wanted || candidate.endsWith(`/${wanted}`) || wanted.endsWith(`/${candidate}`));
@@ -211,7 +287,14 @@ export function checkCitations(answer, ledger) {
     for (const item of items.map((value) => strip(strip(value, "*_ \t", { end: false }), "*_. \t", { start: false })).filter(Boolean)) {
       if (NONE_ITEM.test(item)) continue;
       const lower = item.toLowerCase();
-      const named = titles.some((title) => lower.includes(title) || title.includes(lower))
+      // Literally: the same title, a longer title inside the item, or the item inside a title. Short titles go by their words below.
+      const quoted = quotedParts(item).map((part) => contentWords(part)).filter((words) => words.size);
+      const named = titles.some((title) => lower === title || (lower.includes(title) && contentWords(title).size > 2) || (title.includes(lower) && contentWords(lower).size >= 2))
+        // A title in quotation marks, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
+        || quoted.some((words) => knownNames.some((names) => names.size === words.size && [...words].every((word) => names.has(word))))
+        || namesByWords(contentWords(item), knownNames, sourceWords)
+        // A page or line of a document that was read, written as an item of its own.
+        || (ledger.read.size > 0 && isPointer(item))
         || item.split(PIECE_SPLIT).some((piece) => piece.includes("/") && knownPath(trimPiece(piece)))
         || [...sourceIds].some((id) => lower === id || lower.startsWith(`${id} `) || lower.startsWith(`${id}:`) || lower.startsWith(`${id}/`));
       // A path in the item was already judged above.

@@ -654,14 +654,15 @@ test("arviro eval asks each model the questions through the chat and measures th
   assert.match(stdout, /\nciter\n +1\. .*MADE-UP SOURCE: manuals\/made-up\.md; Imaginary Guide \(library\)/);
   assert.match(stdout, /\nrescuer\n +1\. .*second try/);
   assert.match(stdout, /\nmodel +questions +answered +facts +searched +right source/);
-  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +4 +0 +0 /);
-  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +2 +0 /);
+  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +0 +4 +1 +0 +0 +0 /);
+  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +0 +1 +0 +2 +0 /);
   const files = fs.readdirSync(saveTo).sort();
   assert.equal(files.length, 3);
   const lines = fs.readFileSync(path.join(saveTo, files.find((name) => name.endsWith("-citer.jsonl"))), "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(lines[0].summary.madeUpSources, 4);
   assert.match(lines[1].answer, /Imaginary Guide/);
   assert.deepEqual(lines[1].searched, ["library"]);
+  assert.deepEqual(lines[1].searches, [{ source: "library", query: "How long should I cool a burn?" }], "the saved answers keep the search words");
   // Without a model there is nothing to ask.
   const none = await new Promise((resolve) => {
     execFile(process.execPath, [cli, "eval", questions, "--config", configPath], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));

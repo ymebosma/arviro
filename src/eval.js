@@ -47,19 +47,61 @@ export function factsIn(answer, facts) {
   return facts.filter((fact) => fact.some((wording) => text.includes(normalizeComparable(wording))));
 }
 
-/** Whether an answer says the library does not have it. */
+// Words that deny, and words about finding or having information. A denial near such a word says "it is not there"
+// in more ways than a list of phrases can hold: "Ik kan dit telefoonnummer niet vinden in de lokale bibliotheek".
+const DENIALS = new Set(["not", "no", "cannot", "unable", "don", "doesn", "isn", "couldn", "can", "niet", "geen", "nergens", "nicht", "kein", "keine", "keinen", "pas", "aucun", "aucune", "ni"]);
+const ABOUT_FINDING = new Set([
+  "find", "found", "know", "tell", "contain", "contains", "have", "has", "available", "access", "information", "library", "source", "sources", "documents", "records", "data", "mentioned", "listed", "included",
+  "vinden", "gevonden", "vind", "weet", "weten", "vertellen", "zeggen", "bevat", "bevatten", "heb", "hebben", "beschikbaar", "toegang", "informatie", "gegevens", "bibliotheek", "bron", "bronnen", "documenten", "opgenomen", "vermeld", "staat", "staan", "terug",
+  "finden", "gefunden", "weiss", "enthalten", "informationen", "bibliothek", "quelle", "trouve", "trouver", "information", "bibliotheque",
+]);
+const NEEDS_T = new Set(["can", "don", "doesn", "isn", "couldn"]);
+const NEARBY = 6;
+
+/** Whether an answer says the library does not have it: a denial within a few words of a word about finding or having. */
 export function saysNotFound(answer) {
   const text = normalizeComparable(answer);
-  return NOT_FOUND_PHRASES.some((phrase) => text.includes(phrase));
+  if (NOT_FOUND_PHRASES.some((phrase) => text.includes(phrase))) return true;
+  const words = text.split(" ");
+  let lastDenial = -Infinity;
+  let lastFinding = -Infinity;
+  for (const [index, word] of words.entries()) {
+    // "can", "don" and the like only deny with the "t" of their contraction ("can't" becomes "can t").
+    const denial = DENIALS.has(word) && (!NEEDS_T.has(word) || words[index + 1] === "t");
+    if (denial) lastDenial = index;
+    if (ABOUT_FINDING.has(word)) lastFinding = index;
+    if ((denial || ABOUT_FINDING.has(word)) && Math.abs(lastDenial - lastFinding) <= NEARBY) return true;
+  }
+  return false;
 }
+
+/** Whether an answer ends with a question to the user ("Is de buurvrouw iemand uit de wiki?"). */
+export function asksBack(answer) {
+  const text = String(answer || "").trim();
+  let end = text.length;
+  while (end > 0 && "\"'”’»)*_ ".includes(text[end - 1])) end -= 1;
+  return end > 0 && text[end - 1] === "?";
+}
+
+// From this many searches for one question on, the line says so: one or two searches usually find it.
+export const MANY_SEARCHES = 4;
 
 /** One question through the chat: what the model did and how the answer scores. */
 async function askOne(chat, model, item, sessionKey) {
   const started = Date.now();
-  const row = { question: item.question, model, searched: [], reads: 0, answer: "", seconds: 0 };
+  const row = { question: item.question, model, searched: [], searches: [], repeated: 0, reads: 0, answer: "", seconds: 0 };
+  const searches = new Set();
   try {
     for await (const event of chat.run({ messages: [{ role: "user", content: item.question }], model, sessionKey })) {
-      if (event.type === "tool" && event.name === "search_library") row.searched.push(String(event.args?.source || ""));
+      if (event.type === "tool" && event.name === "search_library") {
+        row.searched.push(String(event.args?.source || ""));
+        // The words too, so that the saved answers show what the model searched for.
+        row.searches.push({ source: String(event.args?.source || ""), query: String(event.args?.query || ""), ...(event.args?.pathPrefix ? { pathPrefix: String(event.args.pathPrefix) } : {}) });
+        // The same search again (same source, same words): the repeat guard answers it, but it costs a round.
+        const key = `${event.args?.source}\u0000${normalizeComparable(event.args?.query)}\u0000${event.args?.pathPrefix || ""}`;
+        if (searches.has(key)) row.repeated += 1;
+        searches.add(key);
+      }
       if (event.type === "tool" && event.name === "read_document") row.reads += 1;
       if (event.type === "message" && event.message.role === "assistant" && !event.message.tool_calls) row.answer = event.message.content;
       if (event.type === "turn") Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, rounds: event.rounds });
@@ -74,7 +116,9 @@ async function askOne(chat, model, item, sessionKey) {
     factsTotal: item.facts.length,
     missing: item.facts.filter((fact) => !found.includes(fact)).map((fact) => fact[0]),
     rightSource: item.sources.length ? row.searched.some((id) => item.sources.some((wanted) => id === wanted || id.startsWith(wanted))) : null,
-    notFoundOk: item.expect === "not-found" ? saysNotFound(row.answer) : null,
+    // A model that answers with a question of its own has not answered yet: that is neither right nor wrong.
+    askedBack: asksBack(row.answer),
+    notFoundOk: item.expect === "not-found" ? (saysNotFound(row.answer) ? true : asksBack(row.answer) ? null : false) : null,
     empty: !row.answer.trim() || row.answer.startsWith("[The model"),
   });
   return row;
@@ -98,6 +142,9 @@ export function summarize(model, rows) {
     read: share(count((row) => row.reads > 0), rows.length),
     notFound: share(notFound.filter((row) => row.notFoundOk).length, notFound.length),
     madeUpSources: rows.reduce((sum, row) => sum + (row.unverified?.length || 0), 0),
+    repeatedSearches: rows.reduce((sum, row) => sum + (row.repeated || 0), 0),
+    searchesAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.searched.length, 0) / rows.length) * 10) / 10 : 0,
+    askedBack: count((row) => row.askedBack),
     rescued: count((row) => row.rescued),
     thinkCut: count((row) => row.thinkCut),
     secondsAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.seconds, 0) / rows.length) * 10) / 10 : 0,
@@ -136,18 +183,34 @@ export function saveEval(results, folder, stamp = new Date().toISOString().repla
 
 const percent = (value) => (value === null ? "-" : `${value}%`);
 
+/** "wikipedia x4, library" for a list of searched sources. */
+function groupCounts(ids) {
+  const counts = new Map();
+  for (const id of ids) counts.set(id, (counts.get(id) || 0) + 1);
+  return [...counts].map(([id, count]) => (count > 1 ? `${id} x${count}` : id)).join(", ");
+}
+
+/** At most three items of at most 60 characters each: the whole text is in the saved answers. */
+function shorten(items) {
+  const cut = items.slice(0, 3).map((item) => (item.length > 60 ? `${item.slice(0, 57)}...` : item));
+  return `${cut.join("; ")}${items.length > 3 ? ` (+${items.length - 3})` : ""}`;
+}
+
 /** One line per question while it runs. */
 export function formatRow(row, index) {
   const parts = [`${String(index + 1).padStart(3)}.`, `${row.seconds}s`.padStart(7)];
   if (row.error) parts.push(`ERROR ${row.error}`);
   else {
-    parts.push(row.searched.length ? `searched ${row.searched.join(",")}` : "no search");
+    parts.push(row.searched.length ? `searched ${groupCounts(row.searched)}` : "no search");
+    if (row.repeated) parts.push(`REPEATED SEARCH x${row.repeated}`);
+    else if (row.searched.length >= MANY_SEARCHES) parts.push(`MANY SEARCHES (${row.searched.length})`);
     if (row.rightSource === false) parts.push("WRONG SOURCE");
     if (row.reads) parts.push(`read ${row.reads}`);
     if (row.factsTotal) parts.push(`facts ${row.factsFound}/${row.factsTotal}${row.missing.length ? ` (missing: ${row.missing.join("; ")})` : ""}`);
     if (row.notFoundOk === false) parts.push("DID NOT SAY IT IS NOT THERE");
+    if (row.askedBack) parts.push("ASKED BACK");
     if (row.empty) parts.push("NO ANSWER");
-    if (row.unverified?.length) parts.push(`MADE-UP SOURCE: ${row.unverified.join("; ")}`);
+    if (row.unverified?.length) parts.push(`MADE-UP SOURCE: ${shorten(row.unverified)}`);
     if (row.rescued) parts.push("second try");
     if (row.thinkCut) parts.push("thinking cut");
   }
@@ -156,8 +219,8 @@ export function formatRow(row, index) {
 
 /** The summary table, one line per model. */
 export function formatSummary(results) {
-  const header = ["model", "questions", "answered", "facts", "searched", "right source", "read", "not-found ok", "made-up sources", "second tries", "thinking cut", "seconds"];
-  const rows = results.map(({ summary: s }) => [s.model, s.questions, s.answered, percent(s.facts), percent(s.searched), percent(s.rightSource), percent(s.read), percent(s.notFound), s.madeUpSources, s.rescued, s.thinkCut, s.secondsAverage].map(String));
+  const header = ["model", "questions", "answered", "facts", "searched", "right source", "read", "not-found ok", "asked back", "made-up sources", "searches per question", "repeated searches", "second tries", "thinking cut", "seconds"];
+  const rows = results.map(({ summary: s }) => [s.model, s.questions, s.answered, percent(s.facts), percent(s.searched), percent(s.rightSource), percent(s.read), percent(s.notFound), s.askedBack, s.madeUpSources, s.searchesAverage, s.repeatedSearches, s.rescued, s.thinkCut, s.secondsAverage].map(String));
   const widths = header.map((title, column) => Math.max(title.length, ...rows.map((row) => row[column].length)));
   return [header, ...rows].map((row) => row.map((cell, column) => cell.padEnd(widths[column])).join("  ").trimEnd()).join("\n");
 }
