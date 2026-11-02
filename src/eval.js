@@ -83,6 +83,23 @@ export function asksBack(answer) {
   return end > 0 && text[end - 1] === "?";
 }
 
+// An answer this short that ends with a question is the question, not an answer with an offer at the end.
+const SHORT_ANSWER = 300;
+
+/**
+ * Whether the model asked back instead of answering: the answer ends with a question and holds no answer of its
+ * own. A full answer that ends with an offer ("Wil je ook weten hoe je het bewaart?") is an answer.
+ * @param {string} answer
+ * @param {{ expect: string, facts: string[][] }} item
+ * @param {number} factsFound
+ */
+export function askedInstead(answer, item, factsFound) {
+  if (!asksBack(answer)) return false;
+  if (item.expect === "not-found") return !saysNotFound(answer);
+  if (item.facts.length) return factsFound === 0;
+  return String(answer).trim().length <= SHORT_ANSWER;
+}
+
 // From this many searches for one question on, the line says so: one or two searches usually find it.
 export const MANY_SEARCHES = 4;
 
@@ -117,8 +134,8 @@ async function askOne(chat, model, item, sessionKey) {
     missing: item.facts.filter((fact) => !found.includes(fact)).map((fact) => fact[0]),
     rightSource: item.sources.length ? row.searched.some((id) => item.sources.some((wanted) => id === wanted || id.startsWith(wanted))) : null,
     // A model that answers with a question of its own has not answered yet: that is neither right nor wrong.
-    askedBack: asksBack(row.answer),
-    notFoundOk: item.expect === "not-found" ? (saysNotFound(row.answer) ? true : asksBack(row.answer) ? null : false) : null,
+    askedBack: askedInstead(row.answer, item, found.length),
+    notFoundOk: item.expect === "not-found" ? (saysNotFound(row.answer) ? true : askedInstead(row.answer, item, 0) ? null : false) : null,
     empty: !row.answer.trim() || row.answer.startsWith("[The model"),
   });
   return row;
