@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
-import { asksBack, factsIn, formatRow, formatSummary, loadEvalQuestions, saysNotFound, summarize } from "../src/eval.js";
+import { askedInstead, asksBack, factsIn, formatRow, formatSummary, loadEvalQuestions, saysNotFound, summarize } from "../src/eval.js";
 
 const folder = fs.mkdtempSync(path.join(os.tmpdir(), "arviro-eval-test-"));
 after(() => fs.rmSync(folder, { recursive: true, force: true }));
@@ -47,6 +47,17 @@ test("facts are found whatever the case and accents; not-found answers are recog
   assert.equal(asksBack('Bedoel je de stad of de kaas?"'), true);
   assert.equal(asksBack("Kook het water. Wil je meer weten? Lees dan verder."), false);
   assert.equal(asksBack(""), false);
+  // Asked back instead of answering, or an answer with an offer at the end (the sourdough question on the Mac).
+  const withFacts = { expect: "answer", facts: [["flour"], ["water"], ["salt"]] };
+  const offer = "Mix flour, water and salt, and let it rise overnight. Wil je ook weten hoe je de starter bewaart?";
+  assert.equal(askedInstead(offer, withFacts, 3), false);
+  assert.equal(askedInstead("Bedoel je brood met gist of met zuurdesem?", withFacts, 0), true);
+  const notFound = { expect: "not-found", facts: [] };
+  assert.equal(askedInstead("Is de buurvrouw iemand uit de wiki?", notFound, 0), true);
+  assert.equal(askedInstead("Dat staat niet in de bibliotheek. Zal ik in de notities zoeken?", notFound, 0), false);
+  const noFacts = { expect: "answer", facts: [] };
+  assert.equal(askedInstead("Welke stad bedoel je?", noFacts, 0), true);
+  assert.equal(askedInstead(`${"Een volledig antwoord. ".repeat(20)}Nog iets?`, noFacts, 0), false);
   assert.equal(saysNotFound("You can find the river Alzette in the valley."), false);
   const started = Date.now();
   saysNotFound("niet ".repeat(100_000) + "vinden ".repeat(100_000));
