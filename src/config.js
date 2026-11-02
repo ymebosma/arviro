@@ -402,6 +402,8 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     // Tokens the model may generate per answer (thinking included), and how long one answer may take.
     numPredict: Number(chatInput.numPredict ?? 8192),
     timeoutSeconds: Number(chatInput.timeoutSeconds ?? 600),
+    // Tokens of thinking per round before Arviro stops it and asks for a search or an answer; 0 means no limit.
+    thinkBudget: Number(chatInput.thinkBudget ?? 4000),
     // null leaves thinking to the model; false switches it off for models that can (Ollama's `think`).
     think: chatInput.think == null ? null : Boolean(chatInput.think),
     maxRounds: Number(chatInput.maxRounds ?? 6),
@@ -410,6 +412,7 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
   if (!Number.isInteger(chat.numPredict) || chat.numPredict < 256) throw new ConfigError("chat.numPredict must be a whole number of at least 256.");
   if (!Number.isInteger(chat.timeoutSeconds) || chat.timeoutSeconds < 1) throw new ConfigError("chat.timeoutSeconds must be a whole number of seconds.");
   if (!Number.isInteger(chat.maxRounds) || chat.maxRounds < 1 || chat.maxRounds > 20) throw new ConfigError("chat.maxRounds must be a whole number from 1 to 20.");
+  if (!Number.isInteger(chat.thinkBudget) || chat.thinkBudget < 0) throw new ConfigError("chat.thinkBudget must be a whole number of tokens, or 0 for no limit.");
 
   const guardInput = asObject(input.guard, "guard");
   return {

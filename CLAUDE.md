@@ -5,7 +5,8 @@ An MCP server that lets a local language model search and read an offline librar
 ## Commands
 
 - `npm test` runs all tests (`node --test`). Run it before every commit.
-- `node bin/arviro.js --help` lists the commands (`serve`, `stdio`, `index`, `search`, `read`, `status`, `doctor`, `setup`, `service`, `library`).
+- `node bin/arviro.js --help` lists the commands (`serve`, `stdio`, `index`, `search`, `read`, `status`, `doctor`, `setup`, `service`, `eval`, `library`).
+- `node bin/arviro.js eval <questions.json> --model a,b` measures chat models on the owner's library (on the owner's computer; the tests use a fake Ollama).
 
 The tests are self-contained: they build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext (see `test/helpers.js`), and a stand-in for the Kiwix catalogue and the download servers (`test/library.test.js`). Nothing needs to be installed besides Node.js and the npm dependencies, and no test uses the network.
 
@@ -23,7 +24,7 @@ The tests are self-contained: they build a small library in a temporary folder a
 - `src/evidence.js`: the verdict for "who is X?" questions.
 - `src/guard.js`: protection against repeated tool calls.
 - `src/mcp.js`, `src/http.js`: the MCP tools, over stdio and stateless Streamable HTTP. `http.js` also serves the admin page and can swap in a new application after a configuration change.
-- `src/admin.js`: the admin page's JSON API and jobs (index, library update, model pull, kiwix-tools); `src/setup.js`: environment checks with platform advice (also `doctor` and `setup`); `src/tools.js`: downloads kiwix-tools into the user's bin folder; `src/service.js`: `service install` for launchd, systemd and the Windows Startup folder; `install.sh` and `install.ps1`: the one-line installers (package manager, clone, `setup`, `service install`); `src/catalogue.js`: curated entries, Kiwix catalogue search, Geofabrik regions; `src/configfile.js`: editing the owner's config file; `src/chat.js`: the Chat tab, Ollama's `/api/chat` with the MCP tools through an in-memory client; `src/ui/`: the page (plain HTML, CSS and JS; nothing external, because the library is offline).
+- `src/admin.js`: the admin page's JSON API and jobs (index, library update, model pull, kiwix-tools); `src/setup.js`: environment checks with platform advice (also `doctor` and `setup`); `src/tools.js`: downloads kiwix-tools into the user's bin folder; `src/service.js`: `service install` for launchd, systemd and the Windows Startup folder; `install.sh` and `install.ps1`: the one-line installers (package manager, clone, `setup`, `service install`); `src/catalogue.js`: curated entries, Kiwix catalogue search, Geofabrik regions; `src/configfile.js`: editing the owner's config file; `src/chat.js`: the Chat tab, Ollama's `/api/chat` with the MCP tools through an in-memory client, plus the aids for small models (thinking budget, a last round without tools, a second try with excerpts, the source check); `src/eval.js`: `arviro eval`, the same chat run over a list of questions with scores per model; `src/ui/`: the page (plain HTML, CSS and JS; nothing external, because the library is offline).
 - `src/text.js`: text helpers and the two error classes.
 
 ## Rules
@@ -35,7 +36,7 @@ The tests are self-contained: they build a small library in a temporary folder a
 - Every function that returns content takes a scope. When you add a feature, add a test that the `public` scope does not show private sources.
 - Code that runs on document content must be linear in the size of the input: no regular expression that can backtrack over an unbounded part of the text. `test/text.test.js` has timing tests for this; extend them when you add a pattern.
 - Messages for the model are either a `UserInputError` (the caller's mistake, with advice) or a `ServiceError` (a problem on the server side, in safe words). Any other error is logged and replaced by a generic message. Never put file paths in a message for the model.
-- The tool names, descriptions and result texts are the interface for small local models. Keep them short and change them only for a reason; a test with a real model runs on the owner's machine, not here.
+- The tool names, descriptions and result texts are the interface for small local models. Keep them short and change them only for a reason; a test with a real model runs on the owner's machine, not here, with `arviro eval`.
 - When the index schema changes, raise `INDEX_VERSION` in `src/db.js`. When passages or embedding inputs change in a way that needs new embeddings, change `EMBEDDING_PROFILE`.
 - Keep README.md in step with the defaults in `src/config.js`.
 - No personal data in the repository: no real names, home folders, addresses or tokens. Examples use neutral names and places.

@@ -1,0 +1,34 @@
+{
+  "questions": [
+    {
+      "question": "How do I make tap water safe to drink after a flood?",
+      "facts": [["boil", "koken", "kook"], ["minute", "minuut", "minuten"]]
+    },
+    {
+      "question": "What are the signs of dehydration in a small child?",
+      "facts": [["dry mouth", "droge mond"], ["wet nappies", "wet diapers", "plassen", "luiers", "urine"]]
+    },
+    {
+      "question": "How long should a burn be cooled under running water?",
+      "facts": [["10 minutes", "ten minutes", "20 minutes", "twenty minutes", "10 minuten", "tien minuten", "20 minuten", "twintig minuten"]]
+    },
+    {
+      "question": "Which river flows through the city of Luxembourg?",
+      "source": "wikipedia",
+      "facts": [["Alzette"]]
+    },
+    {
+      "question": "Who wrote the novel Max Havelaar?",
+      "source": "wikipedia",
+      "facts": [["Multatuli", "Eduard Douwes Dekker"]]
+    },
+    {
+      "question": "What is the phone number of my neighbour?",
+      "expect": "not-found"
+    },
+    {
+      "question": "What will the weather be like tomorrow?",
+      "expect": "not-found"
+    }
+  ]
+}

@@ -93,9 +93,9 @@ node bin/arviro.js read library manuals/water.md
 
 `arviro serve` also serves a page for you, the owner, at `/admin/`. It is only reachable from the computer itself, unless `server.authToken` is set; then the page asks for that token. Set `server.admin` to `false` to switch it off.
 
-- **Environment**: the checks of `arviro doctor`, with the command to install what is missing on your platform. The page itself can pull the embedding model through Ollama and build the index.
+- **Environment**: the checks of `arviro doctor`, with the command to install what is missing on your platform. The page itself can pull the embedding model and a chat model through Ollama and build the index. Without a chat model it suggests one for the computer's memory: `granite4.2:3b` below 16 GB, `granite4.2` from 16 GB, `qwen3.6` from 32 GB. These are models that call the library tools reliably in measurements by the Survival LLM project; `arviro eval` measures them on your own library.
 - **Library**: your document folders (with a folder browser), the download list with what is on disk and how old it is, buttons to check for updates and to update, and a search in the Kiwix catalogue and Geofabrik's region list to add encyclopedias and maps. A few common choices are shown before you search.
-- **Chat**: a conversation with a model from Ollama that uses the library, so Arviro works without any other chat app. The model gets the same two tools and the same system prompt (`examples/system-prompt.en.md`, with `chat.assistantName` filled in) a chat app would; each search and read is shown in the conversation, with its result. Choose a model that can call tools, such as `qwen3` or `llama3.1`.
+- **Chat**: a conversation with a model from Ollama that uses the library, so Arviro works without any other chat app. The model gets the same two tools and the same system prompt (`examples/system-prompt.en.md`, with `chat.assistantName` filled in) a chat app would; each search and read is shown in the conversation, with its result. Choose a model that can call tools, such as `qwen3` or `llama3.1`. Around the model the chat does a few things for small local models: thinking is stopped after `chat.thinkBudget` tokens, the last round (`chat.maxRounds`) has no tools so the model has to answer, a turn that ends without an answer after its lookups is asked once more with what it found, and a document or title the answer names that no search or read showed is pointed out. Under each answer the page lists the documents the model actually read. In Open WebUI the model answers without these aids.
 - **Connect**: the URLs and tokens a chat app needs, and the steps for Open WebUI.
 
 Changes are written to the configuration file (relative to `~` where possible) and take effect at once; only `server.*` settings need a restart. Jobs such as an index build run one at a time in the server, with their log on the page. The MCP endpoints do not change: `/admin/` is not a tool, and the model cannot reach it.
@@ -197,6 +197,7 @@ The configuration is one JSON file: `~/.config/arviro/config.json`, or the file 
 | `chat.assistantName` | What the assistant calls itself; the prompt's `{{assistantName}}` is replaced by it. Default `the assistant`. Arviro is the name of the software, so give the assistant a name of its own here, or write your own prompt file. In Open WebUI, a name per user is a model preset per name (**Workspace → Models**, with its own system prompt and access per user or group). |
 | `chat.numCtx`, `.maxRounds` | Context size for the chat (default 16384) and how often the model may call tools in one turn (default 6). |
 | `chat.numPredict`, `.timeoutSeconds` | How many tokens the model may generate per answer, thinking included (default 8192), and how long one answer may take (default 600 seconds). A model that keeps thinking blocks every other Ollama request, so a limit matters. |
+| `chat.thinkBudget` | Tokens a model may think per round before the chat stops its thinking and asks it to search or answer. Default 4000; `0` means no limit. |
 | `chat.think` | `false` switches thinking off for models that can think (`qwen3` and the like); `true` switches it on. Unset leaves it to the model; its thinking is shown dimmed in the chat. With the library tools, thinking off is often the better setting: answers come faster, and a model that loops in its thinking runs out of room before it answers. |
 | `guard.windowMs`, `.maxCallsPerWindow`, `.maxCallsTotal` | Loop protection: at most 20 calls per 60 seconds for one connection, and 120 for all connections together. |
 | `tools.pdftotext`, `.kiwixServe`, `.osmium` | Paths of the helper programs, when they are not found automatically. |
@@ -257,6 +258,16 @@ After a download, `update` runs `arviro index` (switch that off with `--no-index
 0 4 * * 0  /usr/bin/node /path/to/arviro/bin/arviro.js library update >> ~/.local/share/arviro/library.log 2>&1
 ```
 
+## Measuring how well a model works
+
+Small local models differ a lot in how they use the library: one searches but never reads, another names a source it never opened, a third thinks until it runs out of room. `arviro eval` asks a list of questions to one or more models, through the same code as the Chat tab, and measures that:
+
+```bash
+arviro eval my-questions.json --model qwen3.6,granite4.2
+```
+
+The questions are yours, about your own library; [`examples/eval.example.json`](examples/eval.example.json) shows the format. Each question can name the `source` it belongs to (`"wikipedia"` also matches `wikipedia_nl_all`), the `facts` the answer should contain (each fact a list of wordings, in any language), or `"expect": "not-found"` for a question the library cannot answer. For each question you get one line; for each model a table with the share of facts found, how often it searched, searched the right source and read a document, how often it said so when the library had nothing, how many sources it made up, and the seconds per answer. Every answer is kept in a JSON-lines file under `dataDir/evals` (or `--save <folder>`), so you can compare after a change to the prompt or the settings.
+
 ## Run it as a service
 
 ```bash
@@ -285,7 +296,7 @@ npm test
 
 The tests build a small library in a temporary folder and use stand-ins for Ollama, kiwix-serve, osmium and pdftotext, so none of those need to be installed.
 
-Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js`, `src/chat.js` and `src/ui/` are the admin page; `src/tools.js` fetches kiwix-tools and `src/service.js` installs the service; `install.sh` and `install.ps1` are the installers.
+Layout: `bin/arviro.js` is the command line; `src/arviro.js` ties the sources together; `src/documents.js`, `src/kiwix.js` and `src/osm.js` search; `src/reader.js` reads files; `src/indexer.js` builds the index; `src/library.js` downloads and checks library content; `src/mcp.js` and `src/http.js` expose it over MCP; `src/admin.js`, `src/setup.js`, `src/catalogue.js`, `src/configfile.js`, `src/chat.js` and `src/ui/` are the admin page; `src/tools.js` fetches kiwix-tools and `src/service.js` installs the service; `src/eval.js` is `arviro eval`; `install.sh` and `install.ps1` are the installers.
 
 ## Not there yet
 

@@ -72,7 +72,7 @@ function renderChecks(checks) {
       detail.append(advice);
     }
     if (!check.ok && check.fix) {
-      const labels = { "ollama-pull": "Pull the model", index: "Build the index", "library-update": "Run the library update", "kiwix-tools": "Install kiwix-tools" };
+      const labels = { "ollama-pull": "Pull the model", "ollama-pull-chat": "Pull the chat model", index: "Build the index", "library-update": "Run the library update", "kiwix-tools": "Install kiwix-tools" };
       detail.append(el("div", { class: "advice" }, el("button", { class: "small", type: "button", onclick: () => startJob({ job: check.fix }) }, labels[check.fix] || "Fix")));
     }
     cells.push(detail);
@@ -314,6 +314,19 @@ function addCall(name, args) {
   return details;
 }
 
+/** Under an answer: the documents the model actually opened, and those it only saw in search results. */
+function showSources(bubble, turn) {
+  const name = (item) => `${item.title || item.path}${item.path && item.title ? ` (${item.source}: ${item.path})` : ` (${item.source})`}`;
+  const lines = [];
+  if (turn.read?.length) lines.push(`Read: ${turn.read.map(name).join("; ")}`);
+  if (turn.seen?.length) lines.push(`Seen in search results: ${turn.seen.slice(0, 6).map(name).join("; ")}${turn.seen.length > 6 ? "; …" : ""}`);
+  if (!turn.looked && !turn.read?.length) lines.push("No library lookup in this answer.");
+  if (!lines.length) return;
+  const node = el("div", { class: "msg sources muted" }, lines.map((line) => el("div", { text: line })));
+  if (bubble.isConnected) bubble.after(node);
+  else $("#chat-messages").append(node);
+}
+
 async function loadModels() {
   const select = $("#chat-model");
   try {
@@ -323,7 +336,7 @@ async function loadModels() {
     select.value = data.models.includes(remembered) ? remembered : data.default || data.models[0] || "";
     $("#chat-note").textContent = data.error ? `${data.error} The chat needs Ollama at ${data.url}.`
       : data.models.length ? "The model runs in Ollama on this computer and uses the same two tools a chat app gets. Nothing leaves this computer."
-        : `Ollama at ${data.url} has no chat model yet. Pull one that can call tools, for example: ollama pull qwen3:8b`;
+        : `Ollama at ${data.url} has no chat model yet. Pull one that can call tools; for this computer: ollama pull ${data.suggested || "qwen3.6"} (or use the button under Environment).`;
     chat.modelsLoaded = true;
   } catch (error) {
     $("#chat-note").textContent = error.message;
@@ -382,6 +395,9 @@ async function sendChat() {
         if (event.message.role === "assistant" && !bubble.textContent) bubble.remove();
         if (event.message.role === "tool") bubble = addBubble("assistant");
       }
+      else if (event.type === "retry") { setAnswer(bubble, ""); }
+      else if (event.type === "note") { doneThinking(); bubble.before(el("div", { class: "msg note muted", text: event.text })); }
+      else if (event.type === "turn") { showSources(bubble, event); }
       else if (event.type === "error") { addBubble("error", event.message); }
     };
     for (;;) {
