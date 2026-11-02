@@ -75,15 +75,28 @@ export function saysNotFound(answer) {
   return false;
 }
 
+/** Whether an answer ends with a question to the user ("Is de buurvrouw iemand uit de wiki?"). */
+export function asksBack(answer) {
+  const text = String(answer || "").trim();
+  let end = text.length;
+  while (end > 0 && "\"'”’»)*_ ".includes(text[end - 1])) end -= 1;
+  return end > 0 && text[end - 1] === "?";
+}
+
+// From this many searches for one question on, the line says so: one or two searches usually find it.
+export const MANY_SEARCHES = 4;
+
 /** One question through the chat: what the model did and how the answer scores. */
 async function askOne(chat, model, item, sessionKey) {
   const started = Date.now();
-  const row = { question: item.question, model, searched: [], repeated: 0, reads: 0, answer: "", seconds: 0 };
+  const row = { question: item.question, model, searched: [], searches: [], repeated: 0, reads: 0, answer: "", seconds: 0 };
   const searches = new Set();
   try {
     for await (const event of chat.run({ messages: [{ role: "user", content: item.question }], model, sessionKey })) {
       if (event.type === "tool" && event.name === "search_library") {
         row.searched.push(String(event.args?.source || ""));
+        // The words too, so that the saved answers show what the model searched for.
+        row.searches.push({ source: String(event.args?.source || ""), query: String(event.args?.query || ""), ...(event.args?.pathPrefix ? { pathPrefix: String(event.args.pathPrefix) } : {}) });
         // The same search again (same source, same words): the repeat guard answers it, but it costs a round.
         const key = `${event.args?.source}\u0000${normalizeComparable(event.args?.query)}\u0000${event.args?.pathPrefix || ""}`;
         if (searches.has(key)) row.repeated += 1;
@@ -103,7 +116,9 @@ async function askOne(chat, model, item, sessionKey) {
     factsTotal: item.facts.length,
     missing: item.facts.filter((fact) => !found.includes(fact)).map((fact) => fact[0]),
     rightSource: item.sources.length ? row.searched.some((id) => item.sources.some((wanted) => id === wanted || id.startsWith(wanted))) : null,
-    notFoundOk: item.expect === "not-found" ? saysNotFound(row.answer) : null,
+    // A model that answers with a question of its own has not answered yet: that is neither right nor wrong.
+    askedBack: asksBack(row.answer),
+    notFoundOk: item.expect === "not-found" ? (saysNotFound(row.answer) ? true : asksBack(row.answer) ? null : false) : null,
     empty: !row.answer.trim() || row.answer.startsWith("[The model"),
   });
   return row;
@@ -128,6 +143,8 @@ export function summarize(model, rows) {
     notFound: share(notFound.filter((row) => row.notFoundOk).length, notFound.length),
     madeUpSources: rows.reduce((sum, row) => sum + (row.unverified?.length || 0), 0),
     repeatedSearches: rows.reduce((sum, row) => sum + (row.repeated || 0), 0),
+    searchesAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.searched.length, 0) / rows.length) * 10) / 10 : 0,
+    askedBack: count((row) => row.askedBack),
     rescued: count((row) => row.rescued),
     thinkCut: count((row) => row.thinkCut),
     secondsAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.seconds, 0) / rows.length) * 10) / 10 : 0,
@@ -186,10 +203,12 @@ export function formatRow(row, index) {
   else {
     parts.push(row.searched.length ? `searched ${groupCounts(row.searched)}` : "no search");
     if (row.repeated) parts.push(`REPEATED SEARCH x${row.repeated}`);
+    else if (row.searched.length >= MANY_SEARCHES) parts.push(`MANY SEARCHES (${row.searched.length})`);
     if (row.rightSource === false) parts.push("WRONG SOURCE");
     if (row.reads) parts.push(`read ${row.reads}`);
     if (row.factsTotal) parts.push(`facts ${row.factsFound}/${row.factsTotal}${row.missing.length ? ` (missing: ${row.missing.join("; ")})` : ""}`);
     if (row.notFoundOk === false) parts.push("DID NOT SAY IT IS NOT THERE");
+    if (row.askedBack) parts.push("ASKED BACK");
     if (row.empty) parts.push("NO ANSWER");
     if (row.unverified?.length) parts.push(`MADE-UP SOURCE: ${shorten(row.unverified)}`);
     if (row.rescued) parts.push("second try");
@@ -200,8 +219,8 @@ export function formatRow(row, index) {
 
 /** The summary table, one line per model. */
 export function formatSummary(results) {
-  const header = ["model", "questions", "answered", "facts", "searched", "right source", "read", "not-found ok", "made-up sources", "repeated searches", "second tries", "thinking cut", "seconds"];
-  const rows = results.map(({ summary: s }) => [s.model, s.questions, s.answered, percent(s.facts), percent(s.searched), percent(s.rightSource), percent(s.read), percent(s.notFound), s.madeUpSources, s.repeatedSearches, s.rescued, s.thinkCut, s.secondsAverage].map(String));
+  const header = ["model", "questions", "answered", "facts", "searched", "right source", "read", "not-found ok", "asked back", "made-up sources", "searches per question", "repeated searches", "second tries", "thinking cut", "seconds"];
+  const rows = results.map(({ summary: s }) => [s.model, s.questions, s.answered, percent(s.facts), percent(s.searched), percent(s.rightSource), percent(s.read), percent(s.notFound), s.askedBack, s.madeUpSources, s.searchesAverage, s.repeatedSearches, s.rescued, s.thinkCut, s.secondsAverage].map(String));
   const widths = header.map((title, column) => Math.max(title.length, ...rows.map((row) => row[column].length)));
   return [header, ...rows].map((row) => row.map((cell, column) => cell.padEnd(widths[column])).join("  ").trimEnd()).join("\n");
 }

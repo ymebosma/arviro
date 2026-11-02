@@ -170,8 +170,54 @@ function trimPiece(raw) {
 }
 
 /** The words of a title or file name that say what it is: lowercase, without accents, punctuation and stopwords. */
+// Words that say where something is in a document, or what kind of thing it is, not which document it is.
+const POINTER_WORDS = new Set(["pagina", "paginas", "page", "pages", "p", "pp", "blz", "s", "line", "lines", "regel", "regels", "seite", "seiten", "zeile"]);
+const GENERIC_WORDS = new Set([
+  "pdf", "artikel", "artikelen", "article", "articles", "entry", "lemma", "sectie", "section", "hoofdstuk", "chapter", "kapitel",
+  "document", "documenten", "documents", "bron", "bronnen", "source", "sources", "quelle", "versie", "edition", "editie",
+  "nederlandstalig", "nederlandstalige", "nederlands", "dutch", "engelstalig", "engelstalige", "engels", "english", "duits", "duitstalig", "german", "frans", "french",
+]);
+
 function contentWords(text) {
-  return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !["pagina", "paginas", "page", "pages", "s", "p", "pdf", "line", "lines", "regel", "regels"].includes(word)));
+  return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !POINTER_WORDS.has(word) && !GENERIC_WORDS.has(word)));
+}
+
+/** The parts of a text between quotation marks ("Gouda", “Making bread”, 'Water'). One pass, so linear. */
+function quotedParts(text) {
+  const closers = { "\"": "\"", "“": "”", "„": "”", "'": "'", "‘": "’", "«": "»" };
+  const parts = [];
+  let open = null;
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (open === null && closers[character]) { open = closers[character]; start = index + 1; }
+    else if (open !== null && character === open) { parts.push(text.slice(start, index)); open = null; }
+  }
+  return parts;
+}
+
+/** The text without what is between brackets: "Pagina 6-7 (Principles of gasification)" becomes "Pagina 6-7 ". */
+function withoutBrackets(text) {
+  let depth = 0;
+  let kept = "";
+  for (const character of text) {
+    if (character === "(" || character === "[") depth += 1;
+    else if ((character === ")" || character === "]") && depth > 0) depth -= 1;
+    else if (!depth) kept += character;
+  }
+  return kept;
+}
+
+/**
+ * Whether an item only points into a document ("Werking: Pagina 6-7 (Principles of solid fuel gasification)",
+ * "regel 12"): a page or line reference and nothing that names a document, besides a short label and brackets.
+ */
+function isPointer(item) {
+  const words = normalizeComparable(withoutBrackets(item)).split(" ").filter(Boolean);
+  if (!words.some((word) => POINTER_WORDS.has(word))) return false;
+  const colon = item.indexOf(":");
+  const label = colon > 0 && colon < 40 ? contentWords(item.slice(0, colon)) : new Set();
+  return [...contentWords(withoutBrackets(item))].every((word) => /^\d+$/.test(word) || label.has(word));
 }
 
 /**
@@ -242,8 +288,13 @@ export function checkCitations(answer, ledger) {
       if (NONE_ITEM.test(item)) continue;
       const lower = item.toLowerCase();
       // Literally: the same title, a longer title inside the item, or the item inside a title. Short titles go by their words below.
+      const quoted = quotedParts(item).map((part) => contentWords(part)).filter((words) => words.size);
       const named = titles.some((title) => lower === title || (lower.includes(title) && contentWords(title).size > 2) || (title.includes(lower) && contentWords(lower).size >= 2))
+        // A title in quotation marks, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
+        || quoted.some((words) => knownNames.some((names) => names.size === words.size && [...words].every((word) => names.has(word))))
         || namesByWords(contentWords(item), knownNames, sourceWords)
+        // A page or line of a document that was read, written as an item of its own.
+        || (ledger.read.size > 0 && isPointer(item))
         || item.split(PIECE_SPLIT).some((piece) => piece.includes("/") && knownPath(trimPiece(piece)))
         || [...sourceIds].some((id) => lower === id || lower.startsWith(`${id} `) || lower.startsWith(`${id}:`) || lower.startsWith(`${id}/`));
       // A path in the item was already judged above.

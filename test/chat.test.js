@@ -52,11 +52,20 @@ test("checkCitations names what no tool showed, and accepts what one did", () =>
   assert.deepEqual(checkCitations("Answer.\n\nSources: First aid (library, lines 10-11)", known), [], "a shortened title");
   assert.deepEqual(checkCitations("Answer.\n\nSources: WHO Technical Note 07: Cleaning wells", known), ["WHO Technical Note 07: Cleaning wells"], "another note of the same series is not the one read");
   assert.deepEqual(checkCitations("Answer.\n\nSources: Water purification handbook", known), ["Water purification handbook"], "one shared word is not enough");
+  // From the test on the Mac: a one-word title from the search results, pointers to pages of what was read,
+  // and a title in quotation marks with a line number.
+  assert.deepEqual(checkCitations('Gouda ligt in Zuid-Holland.\n\nBron: Wikipedia (Nederlandstalig), artikel "Gouda"', known), []);
+  assert.deepEqual(checkCitations("Antwoord.\n\nBron: WHO Technical Note 05\n- Werking: Pagina 6-7 (\"Principles of solid fuel gasification\", …)\n- Materialen: Pagina 5 en 11 (Abstract en Introductie, …)", known), []);
+  assert.deepEqual(checkCitations('Antwoord.\n\nBron: Wikipedia, artikel "Mercurius (planeet)" (regel 6)', known), []);
+  assert.deepEqual(checkCitations('Antwoord.\n\nBron: Wikipedia, artikel "Utrecht"', known), ['Wikipedia, artikel "Utrecht"'], "a quoted title that was never seen");
+  const unread = createLedger();
+  unread.record("search_library", { source: "library", query: "x" }, JSON.stringify({ source: "library", results: [{ title: "Water", read: { source: "library", path: "manuals/water.md" } }] }));
+  assert.deepEqual(checkCitations("Antwoord.\n\nBronnen:\n- Pagina 6-7", unread), ["Pagina 6-7"], "a page of nothing that was read");
 });
 
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
