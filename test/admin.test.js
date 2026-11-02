@@ -654,8 +654,8 @@ test("arviro eval asks each model the questions through the chat and measures th
   assert.match(stdout, /\nciter\n +1\. .*MADE-UP SOURCE: manuals\/made-up\.md; Imaginary Guide \(library\)/);
   assert.match(stdout, /\nrescuer\n +1\. .*second try/);
   assert.match(stdout, /\nmodel +questions +answered +facts +searched +right source/);
-  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +4 +0 +0 /);
-  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +2 +0 /);
+  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +4 +0 +0 +0 /);
+  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +0 +2 +0 /);
   const files = fs.readdirSync(saveTo).sort();
   assert.equal(files.length, 3);
   const lines = fs.readFileSync(path.join(saveTo, files.find((name) => name.endsWith("-citer.jsonl"))), "utf8").trim().split("\n").map((line) => JSON.parse(line));

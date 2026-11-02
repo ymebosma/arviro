@@ -18,8 +18,8 @@
       "facts": [["Alzette"]]
     },
     {
-      "question": "Who wrote the novel Max Havelaar?",
-      "source": "wikipedia",
+      "question": "Wie schreef de roman Max Havelaar?",
+      "source": ["wikipedia", "wikibooks"],
       "facts": [["Multatuli", "Eduard Douwes Dekker"]]
     },
     {

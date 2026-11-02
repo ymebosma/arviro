@@ -20,14 +20,16 @@ function ledger() {
   }));
   result.record("search_library", { source: "maps", query: "hospital" }, JSON.stringify({ source: "maps", results: [{ name: "Streekziekenhuis Testdorp", distanceKm: 1.2 }] }));
   result.record("read_document", { source: "library", path: "manuals/first-aid.md" }, "source: library\npath: manuals/first-aid.md\n1 | # First aid");
+  // A PDF that was read without a search result in this ledger: only its file name is known.
+  result.record("read_document", { source: "library", path: "05-survival/documents/who-technical-note-05-emergency-treatment-drinking-water.pdf" }, "source: library\npath: 05-survival/documents/who-technical-note-05-emergency-treatment-drinking-water.pdf\npage 1");
   result.record("read_document", { source: "library", path: "manuals/missing.md" }, "read_document could not do this: That document does not exist.");
   return result;
 }
 
 test("the ledger keeps what was read and what was only seen", () => {
   const known = ledger();
-  assert.deepEqual([...known.read.values()], [{ source: "library", path: "manuals/first-aid.md", title: "First aid at home" }]);
-  assert.deepEqual(known.all().map((item) => item.title), ["First aid at home", "Water", "Gouda", "Mercurius (planeet)", "Streekziekenhuis Testdorp"]);
+  assert.deepEqual([...known.read.values()][0], { source: "library", path: "manuals/first-aid.md", title: "First aid at home" });
+  assert.deepEqual(known.all().map((item) => item.title), ["First aid at home", null, "Water", "Gouda", "Mercurius (planeet)", "Streekziekenhuis Testdorp"]);
   assert.deepEqual([...known.sources].sort(), ["library", "maps", "wikipedia"]);
 });
 
@@ -45,11 +47,16 @@ test("checkCitations names what no tool showed, and accepts what one did", () =>
   assert.deepEqual(checkCitations("Answer.\n\n**Sources:** wikipedia; library", known), [], "a source id alone names a source that was searched");
   assert.deepEqual(checkCitations("No sources line and no paths.", known), []);
   assert.deepEqual(checkCitations("Sources: Gouda", createLedger()), ["Gouda"], "nothing is known in a turn without lookups");
+  // A document cited in the model's own words: its title or file name, with punctuation, small words and pages.
+  assert.deepEqual(checkCitations("Answer.\n\nBronnen: WHO Technical Note 05: Emergency treatment of drinking-water at the point of use (Pagina's 1-2): boil first", known), []);
+  assert.deepEqual(checkCitations("Answer.\n\nSources: First aid (library, lines 10-11)", known), [], "a shortened title");
+  assert.deepEqual(checkCitations("Answer.\n\nSources: WHO Technical Note 07: Cleaning wells", known), ["WHO Technical Note 07: Cleaning wells"], "another note of the same series is not the one read");
+  assert.deepEqual(checkCitations("Answer.\n\nSources: Water purification handbook", known), ["Water purification handbook"], "one shared word is not enough");
 });
 
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
