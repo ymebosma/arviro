@@ -150,6 +150,15 @@ export function formatAge(days) {
   return `${Math.floor(days / 365)} years old`;
 }
 
+/** "1.6 MB of 3.2 MB", or the exact bytes when both round to the same text. */
+export function formatSizes(received, total) {
+  const [left, right] = [formatBytes(received), formatBytes(total)];
+  return left === right ? `${received} of ${total} bytes` : `${left} of ${right}`;
+}
+
+/** Whether a response's body arrives encoded (gzip and the like): its Content-Length then counts other bytes than the file has. */
+const isEncoded = (response) => !["", "identity"].includes(String(response.headers.get("content-encoding") || "").trim().toLowerCase());
+
 const day = (value) => (value ? String(value).slice(0, 10) : null);
 
 async function hashFile(file, algorithm, hash = crypto.createHash(algorithm)) {
@@ -279,7 +288,8 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     if (!response.ok) throw new Error(`${item.url} answered ${response.status}`);
     const modified = Date.parse(response.headers.get("last-modified") || "");
     const range = response.headers.get("content-range")?.match(/\/(\d+)$/)?.[1];
-    const length = Number(range || response.headers.get("content-length"));
+    // The length of an encoded response is not the size of the file.
+    const length = isEncoded(response) && !range ? 0 : Number(range || response.headers.get("content-length"));
     const etag = response.headers.get("etag")?.trim() || null;
     return { file: path.basename(item.file), url: item.url, bytes: length > 0 ? length : null, modifiedAt: Number.isFinite(modified) ? new Date(modified).toISOString() : null, etag };
   }
@@ -327,8 +337,10 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
   /**
    * Download one URL (trying the next one when a download fails) to `target`, resuming a `.part` file when there is one.
    * The hash is computed while downloading; the file is only put in place when it matches `expected`.
+   * With `resume: false` every attempt starts from nothing and a failed attempt leaves no `.part` behind: for a
+   * download without a checksum, where nothing would notice two versions of a changing page glued together.
    */
-  async function downloadFile({ id, urls, target, expected, bytes, modeLike = target }) {
+  async function downloadFile({ id, urls, target, expected, bytes, modeLike = target, resume = true }) {
     const part = `${target}.part`;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     // The new file gets the permissions of the file it replaces or follows; a first download is private to the owner.
@@ -339,7 +351,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     for (const url of urls) {
       for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
         try {
-          const result = await transfer(id, url, part, expected, bytes);
+          const result = await transfer(id, url, part, expected, bytes, resume);
           if (expected && result.digest !== expected.hex) {
             fs.rmSync(part, { force: true });
             mismatches += 1;
@@ -350,6 +362,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
           return result;
         } catch (error) {
           lastError = error;
+          if (!resume) fs.rmSync(part, { force: true });
           if (error instanceof ChecksumError && mismatches >= 2) throw error;
           const more = attempt < ATTEMPTS ? "trying again" : "trying the next address";
           log(`${id}: ${error.message}; ${more}`);
@@ -360,10 +373,11 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     throw lastError || new Error("no download address");
   }
 
-  async function transfer(id, url, part, expected, totalBytes) {
+  async function transfer(id, url, part, expected, totalBytes, resume = true) {
     let hash = expected ? crypto.createHash(expected.algorithm) : null;
     let offset = 0;
-    if (fs.existsSync(part)) {
+    if (!resume) fs.rmSync(part, { force: true });
+    else if (fs.existsSync(part)) {
       offset = fs.statSync(part).size;
       if (totalBytes && offset > totalBytes) { fs.rmSync(part, { force: true }); offset = 0; }
       else if (hash && offset) await hashFile(part, expected.algorithm, hash);
@@ -377,7 +391,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     if (offset && response.status === 416) {
       await response.body?.cancel().catch(() => {});
       fs.rmSync(part, { force: true });
-      return transfer(id, url, part, expected, totalBytes);
+      return transfer(id, url, part, expected, totalBytes, resume);
     }
     if (response.status !== 200 && response.status !== 206) {
       await response.body?.cancel().catch(() => {});
@@ -385,7 +399,8 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     }
     let append = response.status === 206;
     if (!append && offset) { offset = 0; hash = expected ? crypto.createHash(expected.algorithm) : null; }
-    const length = Number(response.headers.get("content-length"));
+    // The response's own length says whether it arrived whole, unless the body is encoded on the way.
+    const length = isEncoded(response) ? 0 : Number(response.headers.get("content-length"));
     const total = totalBytes || (length > 0 ? length + offset : null);
     let received = offset;
     let nextReport = received + (total ? Math.ceil(total / 10) : 512 * 1024 * 1024);
@@ -414,7 +429,7 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
     } finally {
       clearTimeout(timer);
     }
-    if (total && received !== total) throw new Error(`the download stopped at ${formatBytes(received)} of ${formatBytes(total)}`);
+    if (total && received !== total) throw new Error(`the download stopped at ${formatSizes(received, total)}`);
     return { bytes: received, digest: hash?.digest("hex") ?? null };
   }
 
@@ -450,7 +465,10 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
   async function downloadSingle(item, remote, state) {
     const expected = item.checksumHex || (item.checksum ? await fetchChecksum(item.checksum, remote.file) : null);
     log(`${item.id}: downloading ${remote.file}${remote.bytes ? ` (${formatBytes(remote.bytes)})` : ""}`);
-    const result = await downloadFile({ id: item.id, urls: [item.url], target: item.file, expected, bytes: remote.bytes });
+    // A document without a checksum may be a page that differs with every request (a help page of a website):
+    // the size an earlier request reported says nothing about this one, and a resumed download cannot be trusted.
+    const unchecked = item.kind === "file" && !expected;
+    const result = await downloadFile({ id: item.id, urls: [item.url], target: item.file, expected, bytes: unchecked ? null : remote.bytes, resume: !unchecked });
     const stamp = now().toISOString();
     const checksum = expected ? `${expected.algorithm}:${expected.hex}` : item.kind === "file" ? `sha256:${await hashOf(item.file, "sha256")}` : null;
     state.items[keyOf(item)] = { file: remote.file, bytes: result.bytes, checksum, url: item.url, downloadedAt: stamp, verifiedAt: expected ? stamp : null, remoteModified: remote.modifiedAt, remoteEtag: remote.etag };

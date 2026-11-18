@@ -248,7 +248,7 @@ arviro library update lu --force  # downloads one item again, even when it is up
 arviro library verify             # recomputes the checksums of the files on disk
 ```
 
-`status` also lists ZIM files and map regions that are not in `library.downloads`, so you see everything that is there. The admin page adds files from the web under **Library**; a numbered series is added in the configuration file. A download goes to a `.part` file next to its destination and is only put in place when it is complete and its checksum matches; an interrupted download continues where it stopped the next time. What was downloaded, with its checksum, is kept in `library.json` in `dataDir`.
+`status` also lists ZIM files and map regions that are not in `library.downloads`, so you see everything that is there. The admin page adds files from the web under **Library**; a numbered series is added in the configuration file. A download goes to a `.part` file next to its destination and is only put in place when it is complete and its checksum matches; an interrupted download continues where it stopped the next time. A document without a checksum is the exception: it is fetched whole on every attempt and a failed attempt leaves nothing behind, because a web page can differ with every request and nothing would notice two versions glued together. What was downloaded, with its checksum, is kept in `library.json` in `dataDir`.
 
 After a download, `update` runs `arviro index` (switch that off with `--no-index` or `library.indexAfterUpdate`). A running `arviro serve` picks up the new index by itself, but it lists ZIM files when it starts: restart it after a new ZIM edition has arrived.
 

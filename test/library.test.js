@@ -6,7 +6,7 @@ import path from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
 import { ConfigError, normalizeConfig } from "../src/config.js";
-import { createLibrary, formatAge, formatBytes, formatLibraryRows, formatUpdate, formatVerify, parseCatalog, parseChecksumFile, parseMeta4, xmlElements, zimEdition } from "../src/library.js";
+import { createLibrary, formatAge, formatBytes, formatSizes, formatLibraryRows, formatUpdate, formatVerify, parseCatalog, parseChecksumFile, parseMeta4, xmlElements, zimEdition } from "../src/library.js";
 import { fixtureConfig, makeFixture, startFakeDownloads, WIKIPEDIA_BOOK, WIKIVOYAGE_BOOK } from "./helpers.js";
 
 const fixture = makeFixture();
@@ -71,6 +71,8 @@ test("formatting helpers", () => {
   assert.equal(formatBytes(512), "512 B");
   assert.equal(formatBytes(3.3 * 1024 ** 3), "3.3 GB");
   assert.equal(formatBytes(null), "?");
+  assert.equal(formatSizes(1024 ** 2, 3 * 1024 ** 2), "1.0 MB of 3.0 MB");
+  assert.equal(formatSizes(1_675_057, 1_642_808), "1675057 of 1642808 bytes", "the same rounded size says nothing");
   assert.equal(formatAge(0.5), "today");
   assert.equal(formatAge(12.7), "12 days old");
   assert.equal(formatAge(200), "6 months old");
@@ -292,6 +294,32 @@ test("file downloads keep documents from the web inside a document source and up
   fs.writeFileSync(path.join(fixture.library, "web", "other.pdf"), "by hand");
   assert.match(formatLibraryRows(fresh.status()), /other\.pdf +file +other\.pdf .* checksum pinned, not yet verified/);
   fs.rmSync(path.join(fixture.library, "web"), { recursive: true, force: true });
+});
+
+test("a page that differs with every request is downloaded whole, without resuming and without a size from an earlier request", async () => {
+  const web = path.join(fixture.library, "web");
+  const library = createLibrary(makeConfig({ downloads: [
+    { file: "web/dynamic.html", url: `${remote.url}/docs/dynamic.html`, source: "library" },
+    { file: "web/zipped.html", url: `${remote.url}/docs/zipped.html`, source: "library" },
+    { file: "web/broken.pdf", url: `${remote.url}/docs/broken.pdf`, source: "library" },
+  ] }), quiet);
+  // What an interrupted run of an earlier version left behind must not be glued to the new download.
+  fs.mkdirSync(web, { recursive: true });
+  fs.writeFileSync(path.join(web, "dynamic.html.part"), "STALE HALF OF ANOTHER RENDER");
+  const summary = await library.update();
+  assert.deepEqual(summary.items.map((row) => row.action), ["downloaded", "downloaded", "failed"], formatUpdate(summary));
+  const page = fs.readFileSync(path.join(web, "dynamic.html"), "utf8");
+  assert.match(page, /^<html><body><p>Reset the router with the button\.<\/p><\/body><\/html><!-- render x+ -->$/);
+  assert.equal(fs.readFileSync(path.join(web, "zipped.html"), "utf8").length, remote.docs["/docs/zipped.html"].bytes.length, "the page arrives unzipped and whole");
+  assert.match(summary.items[2].error, /terminated|closed|aborted|socket/i);
+  assert.deepEqual(fs.readdirSync(web).sort(), ["dynamic.html", "zipped.html"], "no .part file is left, also not of the download that failed");
+  // The checksum of what arrived is recorded, so verify works; --force fetches the next render.
+  assert.deepEqual((await library.verify(["library/web/dynamic.html", "library/web/zipped.html"])).map((row) => row.status), ["ok", "ok"]);
+  const again = await library.update(["library/web/dynamic.html"], { force: true });
+  assert.equal(again.items[0].action, "downloaded");
+  assert.notEqual(fs.readFileSync(path.join(web, "dynamic.html"), "utf8"), page);
+  assert.deepEqual((await library.verify(["library/web/dynamic.html"])).map((row) => row.status), ["ok"]);
+  fs.rmSync(web, { recursive: true, force: true });
 });
 
 test("verify recomputes checksums and notices a changed file", async () => {

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { normalizeConfig } from "../src/config.js";
 import { PREFIX } from "../src/embeddings.js";
 
@@ -160,6 +161,12 @@ export function startFakeDownloads() {
       "/docs/part-01.pdf": { bytes: Buffer.from("%PDF-1.4 part one"), etag: '"p1"' },
       "/docs/part-02.pdf": { bytes: Buffer.from("%PDF-1.4 part two"), etag: '"p2"' },
       "/docs/part-03.pdf": { bytes: Buffer.from("%PDF-1.4 part three"), etag: '"p3"' },
+      // A help page of a website: every request renders it anew with another length, HEAD is refused, Range is ignored.
+      "/docs/dynamic.html": { bytes: Buffer.from("<html><body><p>Reset the router with the button.</p></body></html>"), dynamic: true, renders: 0 },
+      // Sent gzipped, so its Content-Length is not the size of the file.
+      "/docs/zipped.html": { bytes: Buffer.from(`<html><body>${"<p>Compressible text.</p>".repeat(200)}</body></html>`), gzip: true, etag: '"z1"' },
+      // The connection breaks halfway, every time.
+      "/docs/broken.pdf": { bytes: Buffer.from("%PDF-1.4 this one never arrives whole"), broken: true },
     },
     requests: [],
     server: null,
@@ -248,6 +255,23 @@ ${entry("nopic", NEW_WIKIPEDIA, ZIM_BYTES.length)}
       if (url.pathname === "/europe/testland-latest.osm.pbf.md5") return text(200, `${hash("md5", remote.map.bytes)}  testland-latest.osm.pbf\n`);
       const doc = remote.docs[url.pathname];
       if (doc && doc.headFails && req.method === "HEAD") return text(500, "Internal Server Error");
+      if (doc?.dynamic) {
+        if (req.method === "HEAD") return text(404, "not found");
+        doc.renders += 1;
+        const body = Buffer.concat([doc.bytes, Buffer.from(`<!-- render ${"x".repeat(doc.renders)} -->`)]);
+        res.writeHead(200, { "content-type": "text/html", "content-length": body.length });
+        return res.end(body);
+      }
+      if (doc?.gzip) {
+        const body = zlib.gzipSync(doc.bytes);
+        res.writeHead(200, { "content-type": "text/html", "content-encoding": "gzip", "content-length": body.length, etag: doc.etag });
+        return res.end(req.method === "HEAD" ? undefined : body);
+      }
+      if (doc?.broken && req.method !== "HEAD") {
+        res.writeHead(200, { "content-type": "application/pdf", "content-length": doc.bytes.length });
+        res.write(doc.bytes.subarray(0, 10));
+        return setTimeout(() => res.destroy(), 20);
+      }
       if (doc) return sendBytes(req, res, doc.bytes, { ...(doc.modified ? { "last-modified": doc.modified } : {}), ...(doc.etag ? { etag: doc.etag } : {}) });
       const checksumOf = url.pathname.match(/^(.*)\.sha256$/);
       if (checksumOf && remote.docs[checksumOf[1]]) return text(200, `${hash("sha256", remote.docs[checksumOf[1]].bytes)}  ${path.basename(checksumOf[1])}\n`);
