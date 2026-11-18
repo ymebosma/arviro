@@ -265,11 +265,14 @@ function libraryConfig(input, { zimDir, regions, dataDir, sources }) {
       const literal = entry.checksum != null && entry.checksum !== false ? String(entry.checksum).match(CHECKSUM_LITERAL) : null;
       const checksumHex = literal ? { algorithm: (literal[1] || ALGORITHM_BY_LENGTH[literal[2].length]).toLowerCase(), hex: literal[2].toLowerCase() } : null;
       const note = entry.note == null ? null : String(entry.note).trim().slice(0, 500) || null;
+      // For a server that says nothing about versions (no ETag, no Last-Modified): fetch again after this many days.
+      const refreshDays = entry.refreshDays == null ? null : Number(entry.refreshDays);
+      if (refreshDays !== null && (!Number.isInteger(refreshDays) || refreshDays < 1 || refreshDays > 3650)) throw new ConfigError(`${label}.refreshDays must be a whole number of days, from 1 to 3650.`);
       for (const { relative, url, number } of expandFileEntry(entry, label)) {
         const file = path.resolve(source.root, ...relative.split("/"));
         let checksum = null;
         if (entry.checksum != null && entry.checksum !== false && !literal) checksum = httpUrl(new URL(String(entry.checksum).replaceAll("{n}", number ?? ""), url).href, `${label}.checksum`).href;
-        items.push({ id: `${sourceId}/${relative}`, kind: "file", source: sourceId, relative, file, url, checksum, checksumHex, note, entry: index });
+        items.push({ id: `${sourceId}/${relative}`, kind: "file", source: sourceId, relative, file, url, checksum, checksumHex, note, refreshDays, entry: index });
       }
     } else {
       throw new ConfigError(`${label} needs "zim" (a name from the Kiwix catalogue), "map" (a region from maps.regions) or "file" (a file in a document source).`);
