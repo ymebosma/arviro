@@ -111,6 +111,9 @@ test("the download list is validated", () => {
   rejects({ downloads: [{ file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [3, 1] }] }, /smaller than the first/);
   rejects({ downloads: [{ file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [1, 9000] }] }, /more than 500 files/);
   rejects({ downloads: [{ file: "web/guide.pdf", url: docsUrl, source: "library" }, { file: "web/guide.pdf", url: docsUrl, source: "library" }] }, /listed twice/);
+  rejects({ downloads: [{ file: "web/guide.pdf", url: docsUrl, source: "library", refreshDays: 0 }] }, /refreshDays must be a whole number of days/);
+  rejects({ downloads: [{ file: "web/guide.pdf", url: docsUrl, source: "library", refreshDays: "soon" }] }, /refreshDays/);
+  assert.equal(makeConfig({ downloads: [{ file: "web/guide.pdf", url: docsUrl, source: "library", refreshDays: 30 }] }).library.downloads[0].refreshDays, 30);
   const files = makeConfig({ downloads: [
     { file: "web/guide.pdf", url: docsUrl, source: "library", checksum: "guide.pdf.sha256", note: "Example Org, CC BY 4.0" },
     { file: "web/part-{n}.pdf", url: `${remote.url}/docs/part-{n}.pdf`, source: "library", range: [1, 3], pad: 2 },
@@ -319,6 +322,26 @@ test("a page that differs with every request is downloaded whole, without resumi
   assert.equal(again.items[0].action, "downloaded");
   assert.notEqual(fs.readFileSync(path.join(web, "dynamic.html"), "utf8"), page);
   assert.deepEqual((await library.verify(["library/web/dynamic.html"])).map((row) => row.status), ["ok"]);
+
+  // The server says nothing about versions of this page (no ETag, no Last-Modified, HEAD refused): the check cannot
+  // tell, unless the entry says after how many days to fetch it again.
+  assert.equal((await library.check(["library/web/dynamic.html"]))[0].verdict, "unknown");
+  assert.match(formatLibraryRows(await library.check(["library/web/dynamic.html"])), /cannot tell whether a newer version exists; use --force, or set refreshDays/);
+  const refreshing = (date) => createLibrary(makeConfig({ downloads: [{ file: "web/dynamic.html", url: `${remote.url}/docs/dynamic.html`, source: "library", refreshDays: 30 }] }), { ...quiet, now: clock(date) });
+  const first = await refreshing("2026-11-18T12:00:00Z").update([], { force: true });
+  assert.equal(first.items[0].action, "downloaded");
+  const fetched = fs.readFileSync(path.join(web, "dynamic.html"), "utf8");
+  assert.equal((await refreshing("2026-12-10T12:00:00Z").check())[0].verdict, "current");
+  assert.deepEqual((await refreshing("2026-12-10T12:00:00Z").update()).items.map((row) => row.action), ["current"]);
+  const due = await refreshing("2026-12-19T12:00:00Z").check();
+  assert.equal(due[0].verdict, "due");
+  assert.match(formatLibraryRows(due), /DUE: older than its refreshDays/);
+  assert.deepEqual((await refreshing("2026-12-19T12:00:00Z").update()).items.map((row) => row.action), ["downloaded"]);
+  assert.notEqual(fs.readFileSync(path.join(web, "dynamic.html"), "utf8"), fetched);
+  assert.equal((await refreshing("2026-12-20T12:00:00Z").check())[0].verdict, "current", "the count starts again at the download");
+  // A server that does tell versions is believed: refreshDays does not make an unchanged file due.
+  const telling = createLibrary(makeConfig({ downloads: [{ file: "web/zipped.html", url: `${remote.url}/docs/zipped.html`, source: "library", refreshDays: 1 }] }), { ...quiet, now: clock("2027-06-01T12:00:00Z") });
+  assert.equal((await telling.check())[0].verdict, "current");
   fs.rmSync(web, { recursive: true, force: true });
 });
 

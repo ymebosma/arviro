@@ -315,6 +315,10 @@ export function createLibrary(config, { log = () => {}, fetchImpl = fetch, now =
       verdict = remote.etag === row.remoteEtag ? "current" : "newer";
     } else if (remote.modifiedAt && (row.remoteModified || row.modifiedAt)) {
       verdict = Date.parse(remote.modifiedAt) > Date.parse(row.remoteModified || row.modifiedAt) ? "newer" : "current";
+    } else if (item.refreshDays) {
+      // The server says nothing about versions: the owner's refreshDays decides when the copy is fetched again.
+      const since = Date.parse(row.downloadedAt || row.modifiedAt || "");
+      verdict = Number.isFinite(since) && now().getTime() - since < item.refreshDays * DAY_MS ? "current" : "due";
     } else verdict = "unknown";
     return { ...row, remote, verdict };
   }
@@ -556,7 +560,8 @@ export function formatLibraryRows(rows) {
     else if (row.verdict === "missing") parts.push(`AVAILABLE: ${row.remote.file}${row.remote.bytes ? ` (${formatBytes(row.remote.bytes)})` : ""}`);
     else if (row.verdict === "current") parts.push("up to date");
     else if (row.verdict === "damaged") parts.push("DAMAGED: the file differs from what was downloaded; update downloads it again");
-    else if (row.verdict === "unknown") parts.push("cannot tell whether a newer version exists; use --force");
+    else if (row.verdict === "due") parts.push("DUE: older than its refreshDays; update fetches it again");
+    else if (row.verdict === "unknown") parts.push("cannot tell whether a newer version exists; use --force, or set refreshDays");
     else if (row.verdict === "error") parts.push(`ERROR: ${row.error}`);
     return parts.join("  ");
   }).join("\n");

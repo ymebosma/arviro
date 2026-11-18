@@ -98,6 +98,7 @@ function verdictOf(check) {
   if (check.verdict === "missing") return { text: `AVAILABLE: ${remote}`, bad: true };
   if (check.verdict === "damaged") return { text: "DAMAGED: differs from what was downloaded; Update now downloads it again", bad: true };
   if (check.verdict === "current") return { text: "up to date", bad: false };
+  if (check.verdict === "due") return { text: "DUE: older than its refreshDays; Update now fetches it again", bad: true };
   if (check.verdict === "unknown") return { text: "cannot tell whether a newer version exists", bad: false };
   if (check.verdict === "error") return { text: `ERROR: ${check.error}`, bad: true };
   return null;
