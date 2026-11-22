@@ -30,6 +30,7 @@ let ollama;
 function startFakeOllama() {
   const models = ["chatty:latest"];
   const chats = [];
+  const garbled = {};
   const node = http.createServer((req, res) => {
     if (req.url === "/api/tags") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ models: models.map((name) => ({ name })) })); }
     if (req.url === "/api/chat") {
@@ -62,6 +63,18 @@ function startFakeOllama() {
         if (request.model === "searcher") {
           if (request.tools) return search(`burn ${request.messages.length}`);
           line({ role: "assistant", content: "Final answer from what I found." });
+          return finish();
+        }
+        // "garbler" writes a tool call that Ollama cannot read, the first time; "garbler-always" every time.
+        if (request.model.startsWith("garbler")) {
+          garbled[request.model] = (garbled[request.model] || 0) + 1;
+          if (request.model === "garbler-always" || garbled[request.model] === 1) {
+            line({ role: "assistant", content: "Let me " });
+            res.write(`${JSON.stringify({ error: "expected element type <function> but have <parameter>" })}\n`);
+            return res.end();
+          }
+          if (last.role === "user") return search(last.content);
+          line({ role: "assistant", content: "Answer after a second try." });
           return finish();
         }
         // "citer" searches once and then names a document and a title it never saw.
@@ -625,6 +638,21 @@ test("the chat helps small models: a last round without tools, a second try, a t
     assert.equal(answerOf(overthinker.events), "Short answer.");
     assert.equal(overthinker.events.find((event) => event.type === "turn").thinkCut, true);
 
+    // A tool call Ollama cannot read: the round is asked once more, and what had streamed is taken back.
+    ollama.chats.length = 0;
+    const garbler = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "garbler" });
+    assert.equal(garbler.status, 200);
+    assert.equal(answerOf(garbler.events), "Answer after a second try.");
+    assert.deepEqual(types(garbler.events).slice(0, 3), ["token", "retry", "note"]);
+    assert.match(garbler.events.find((event) => event.type === "note").text, /could not read; the round was asked again/);
+    assert.equal(garbler.events.find((event) => event.type === "turn").reasked, 1);
+    assert.equal(ollama.chats.length, 3, "the first round twice, then the answer");
+    assert.deepEqual(ollama.chats[1].messages, ollama.chats[0].messages, "the same round again");
+    // It fails again: the turn ends with the error, as before.
+    const always = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "garbler-always" });
+    assert.equal(always.events.at(-1).type, "error");
+    assert.equal(types(always.events).filter((type) => type === "note").length, 1);
+
     // Sources it never saw are pointed out; the ones it saw are fine, with or without the source id in front.
     const citer = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "citer" });
     const turn = citer.events.find((event) => event.type === "turn");
@@ -654,8 +682,8 @@ test("arviro eval asks each model the questions through the chat and measures th
   assert.match(stdout, /\nciter\n +1\. .*MADE-UP SOURCE: manuals\/made-up\.md; Imaginary Guide \(library\)/);
   assert.match(stdout, /\nrescuer\n +1\. .*second try/);
   assert.match(stdout, /\nmodel +questions +answered +facts +searched +right source/);
-  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +0 +4 +1 +0 +0 +0 /);
-  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +0 +1 +0 +2 +0 /);
+  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +0 +4 +1 +0 +0 +0 +0 /);
+  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +0 +1 +0 +2 +0 +0 /);
   const files = fs.readdirSync(saveTo).sort();
   assert.equal(files.length, 3);
   const lines = fs.readFileSync(path.join(saveTo, files.find((name) => name.endsWith("-citer.jsonl"))), "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -663,6 +691,24 @@ test("arviro eval asks each model the questions through the chat and measures th
   assert.match(lines[1].answer, /Imaginary Guide/);
   assert.deepEqual(lines[1].searched, ["library"]);
   assert.deepEqual(lines[1].searches, [{ source: "library", query: "How long should I cool a burn?" }], "the saved answers keep the search words");
+  assert.deepEqual(lines[1].documentsSeen[0], { source: "library", path: "manuals/first-aid.md", title: "First aid at home" }, "and what the searches showed");
+  // Several runs: a line per question for each run, the mean and the range in the table, a file per run.
+  // "garbler-eval" writes an unreadable tool call the first time only, so the two runs differ.
+  const saveRuns = path.join(fixture.root, "eval-runs");
+  const several = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "garbler-eval", "--runs", "2", "--save", saveRuns], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
+  });
+  assert.equal(several.code, 0, several.stderr);
+  assert.match(several.stdout, /\ngarbler-eval \(run 1 of 2\)\n +1\. .*searched library .* asked again +How long/);
+  assert.match(several.stdout, /\ngarbler-eval \(run 2 of 2\)\n +1\. .*searched library +facts 0\/2 \([^)]*\) +How long/);
+  assert.match(several.stdout, /\nmodel +runs +questions +answered/);
+  assert.match(several.stdout, /\ngarbler-eval +2 +2 +2 .* 0\.5 \(0-1\) +\d/);
+  assert.deepEqual(fs.readdirSync(saveRuns).map((name) => name.replace(/^.*-garbler/, "garbler")).sort(), ["garbler-eval-run1.jsonl", "garbler-eval-run2.jsonl"]);
+  const wrong = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "chatty:latest", "--runs", "0"], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));
+  });
+  assert.equal(wrong.code, 2);
+  assert.match(wrong.stderr, /--runs is a whole number from 1 to 20/);
   // Without a model there is nothing to ask.
   const none = await new Promise((resolve) => {
     execFile(process.execPath, [cli, "eval", questions, "--config", configPath], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));

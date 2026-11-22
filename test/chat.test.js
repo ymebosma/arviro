@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { checkCitations, createLedger, isEmptyAnswer } from "../src/chat.js";
+import { checkCitations, createLedger, isEmptyAnswer, isUnreadableToolCall } from "../src/chat.js";
 
 function ledger() {
   const result = createLedger();
@@ -63,9 +63,51 @@ test("checkCitations names what no tool showed, and accepts what one did", () =>
   assert.deepEqual(checkCitations("Antwoord.\n\nBronnen:\n- Pagina 6-7", unread), ["Pagina 6-7"], "a page of nothing that was read");
 });
 
+test("checkCitations accepts real sources in the model's own words (issue 11), and still names made-up ones", () => {
+  const known = createLedger();
+  known.record("search_library", { source: "maps", query: "pharmacy Testdorp" }, JSON.stringify({ source: "maps", results: [{ name: "Apotheek Centrum", distanceKm: 0.4 }] }));
+  known.record("search_library", { source: "wikipedia_nl_all", query: "Gouda" }, JSON.stringify({ source: "wikipedia_nl_all", results: [{ title: "Gouda", read: { source: "wikipedia_nl_all", path: "/kiwix/content/wikipedia_nl_all_nopic_2026-04/Gouda" } }] }));
+  known.record("search_library", { source: "mdwiki", query: "dehydration" }, JSON.stringify({ source: "mdwiki", results: [{ title: "Dehydration", read: { source: "mdwiki", path: "/kiwix/content/mdwiki_en_all_maxi_2026-09/Dehydration" } }] }));
+  known.record("read_document", { source: "mdwiki", path: "/kiwix/content/mdwiki_en_all_maxi_2026-09/Dehydration" }, "source: mdwiki\nlines: 1-80 of 300\n1 | Dehydration");
+  known.record("search_library", { source: "offline", query: "error codes" }, JSON.stringify({ source: "offline", results: [{ title: "Boiler manual", page: 78, read: { source: "offline", path: "folder/documents/some-handbook-2021.pdf", offset: 78 } }] }));
+  known.record("read_document", { source: "offline", path: "folder/documents/some-handbook-2021.pdf", offset: 78 }, "source: offline\npath: folder/documents/some-handbook-2021.pdf\npage 78\n78.1 | Error codes\npage 79\n79.1 | E12");
+  const sources = [{ id: "maps", description: "OpenStreetMap places and amenities, with distances" }, { id: "wikipedia_nl_all", description: "Wikipedia (offline): general knowledge" }, { id: "mdwiki", description: "MDWiki: medical articles" }, { id: "offline", description: "Manuals of the house" }];
+  const flagged = (item) => checkCitations(`Answer.\n\nSources:\n- ${item}`, known, { sources });
+  for (const real of [
+    'OpenStreetMap (maps), category "pharmacy", region Testdorp',
+    "OpenStreetMap via maps",
+    "Dutch Wikipedia, article about Gouda",
+    "Nederlandse Wikipedia, artikel over Gouda",
+    "[mdwiki - Dehydration](/kiwix/content/mdwiki_en_all_maxi_2026-09/Dehydration) (general symptoms)",
+    "folder/documents/some-handbook-2021.pdf",
+    ".../documents/some-handbook-2021.pdf",
+    'Boiler manual (PDF), page 78-79, section "Error codes"',
+    "Ketelhandleiding 2021*, hoofdstuk 13 (offline, p. 78–79)",
+    'it says explicitly: "Cool the burn for at least ten minutes under running water"',
+    "Note: although the passages I read do not name the model, the steps are the same",
+    "see also p. 265–266 about cleaning)",
+    "MDWiki (medical articles)",
+    "Manuals of the house, page 78",
+  ]) assert.deepEqual(flagged(real), [], real);
+  assert.deepEqual(checkCitations("See `.../documents/some-handbook-2021.pdf` and (folder/documents/some-handbook-2021.pdf, p. 78).", known, { sources }), []);
+  // What no search or read showed is still pointed out.
+  for (const madeUp of [
+    "Imaginary Handbook, page 12",
+    "Ketelhandleiding 2021, p. 300",
+    "Mayo Clinic: Dehydration in children",
+    "Wikipedia, article about Utrecht",
+    ".../documents/another-handbook.pdf",
+    "Red Cross first aid guide (2019)",
+  ]) assert.equal(flagged(madeUp).length, 1, madeUp);
+  // Without a map search, the word "maps" names nothing.
+  const noMap = createLedger();
+  noMap.record("search_library", { source: "library", query: "x" }, JSON.stringify({ source: "library", results: [{ title: "Water", read: { source: "library", path: "manuals/water.md" } }] }));
+  assert.deepEqual(checkCitations("Answer.\n\nSources: OpenStreetMap via maps", noMap), ["OpenStreetMap via maps"]);
+});
+
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
@@ -78,4 +120,12 @@ test("isEmptyAnswer: nothing, or a tool call written out", () => {
   assert.equal(isEmptyAnswer('<tool_call>{"name": "search_library"}</tool_call>'), true);
   assert.equal(isEmptyAnswer('{"name": "search_library", "arguments": {}}'), true);
   assert.equal(isEmptyAnswer("Cool the burn for ten minutes."), false);
+});
+
+test("an error about a tool call Ollama could not read is told apart from other errors", () => {
+  assert.equal(isUnreadableToolCall("Ollama answered 500: error parsing tool call: raw='<parameter=query>', err=expected element type <function> but have <parameter>"), true);
+  assert.equal(isUnreadableToolCall("expected element type <function> but have <parameter>"), true);
+  assert.equal(isUnreadableToolCall("Ollama answered 404: model \"nothing\" not found"), false);
+  assert.equal(isUnreadableToolCall("Ollama answered 500: model requires more system memory"), false);
+  assert.equal(isUnreadableToolCall(undefined), false);
 });

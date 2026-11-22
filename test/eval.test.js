@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
-import { askedInstead, asksBack, factsIn, formatRow, formatSummary, loadEvalQuestions, saysNotFound, summarize } from "../src/eval.js";
+import { askedInstead, asksBack, factsIn, formatRow, formatSummary, loadEvalQuestions, saveEval, saysNotFound, spread, summarize } from "../src/eval.js";
 
 const folder = fs.mkdtempSync(path.join(os.tmpdir(), "arviro-eval-test-"));
 after(() => fs.rmSync(folder, { recursive: true, force: true }));
@@ -41,6 +41,12 @@ test("facts are found whatever the case and accents; not-found answers are recog
   assert.equal(saysNotFound("Ik heb geen toegang tot internet en kan je dus niet vertellen wat het weer morgen wordt."), true);
   assert.equal(saysNotFound("Die informatie is niet in mijn lokale bibliotheek opgenomen."), true);
   assert.equal(saysNotFound("I can't find that in the library."), true);
+  // Dutch puts the participle at the end of the clause: the denial and "gevonden" are far apart (issue 11).
+  assert.equal(saysNotFound("Er is geen instructie voor het instellen van een Voorbeeld Apparaat (een soort apparaat) gevonden in de beschikbare lokale bibliotheken."), true);
+  assert.equal(saysNotFound("Es wurde keine Anleitung für das Einrichten eines solchen Geräts in den Dokumenten gefunden."), true);
+  // A denial in one sentence and a finding word in the next do not belong together.
+  assert.equal(saysNotFound("Gebruik geen zeep. De informatie staat op pagina 12 van de handleiding."), false);
+  assert.equal(saysNotFound("Do not use soap. The library has a page about it."), false);
   assert.equal(saysNotFound("The library doesn't have anything on it."), true);
   assert.equal(saysNotFound("Kook het water één minuut en laat het afkoelen."), false);
   assert.equal(asksBack("Is de buurvrouw een persoon wiens gegevens zijn opgenomen in `wiki`?"), true);
@@ -61,26 +67,56 @@ test("facts are found whatever the case and accents; not-found answers are recog
   assert.equal(saysNotFound("You can find the river Alzette in the valley."), false);
   const started = Date.now();
   saysNotFound("niet ".repeat(100_000) + "vinden ".repeat(100_000));
+  saysNotFound("geen. ".repeat(100_000));
   assert.ok(Date.now() - started < 1000);
 });
 
 test("the summary counts per model, and the lines say what went wrong", () => {
   const rows = [
     { question: "a", model: "m", searched: ["library", "library"], repeated: 1, reads: 1, answer: "x", seconds: 2, factsFound: 2, factsTotal: 2, missing: [], rightSource: true, notFoundOk: null, empty: false, unverified: [], rescued: false, thinkCut: false },
-    { question: "b", model: "m", searched: [], reads: 0, answer: "", seconds: 4, factsFound: 0, factsTotal: 1, missing: ["lukewarm"], rightSource: false, notFoundOk: null, empty: true, unverified: ["made-up.md"], rescued: true, thinkCut: true },
+    { question: "b", model: "m", searched: [], reads: 0, answer: "", seconds: 4, factsFound: 0, factsTotal: 1, missing: ["lukewarm"], rightSource: false, notFoundOk: null, empty: true, unverified: ["made-up.md"], rescued: true, thinkCut: true, reasked: 1 },
     { question: "c", model: "m", searched: ["wikipedia", "wikipedia", "wikipedia", "library"], reads: 0, answer: "not found", askedBack: false, seconds: 3, factsFound: 0, factsTotal: 0, missing: [], rightSource: null, notFoundOk: true, empty: false, unverified: [], rescued: false, thinkCut: false },
   ];
   rows[1].askedBack = true;
   const summary = summarize("m", rows);
-  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 67, rightSource: 50, read: 33, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, secondsAverage: 3 });
-  const table = formatSummary([{ model: "m", rows, summary }]);
+  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 67, rightSource: 50, read: 33, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, secondsAverage: 3 });
+  const table = formatSummary([{ model: "m", run: 1, rows, summary }]);
   assert.match(table, /^model +questions +answered +facts/);
-  assert.match(table, /\nm +3 +2 +67% +67% +50% +33% +100% +1 +1 +2 +1 +1 +1 +3$/);
+  assert.match(table, /thinking cut +asked again +seconds$/m);
+  assert.match(table, /\nm +3 +2 +67% +67% +50% +33% +100% +1 +1 +2 +1 +1 +1 +1 +3$/);
   assert.match(formatRow(rows[2], 2), /searched wikipedia x3, library +MANY SEARCHES \(4\)/);
   assert.match(formatRow(rows[1], 1), /ASKED BACK/);
   assert.match(formatRow(rows[0], 0), /searched library x2 +REPEATED SEARCH x1 +read 1/);
   const long = formatRow({ ...rows[1], unverified: ["A".repeat(100), "b", "c", "d", "e"] }, 1);
   assert.match(long, /MADE-UP SOURCE: A{57}\.\.\.; b; c \(\+2\)/);
-  assert.match(formatRow(rows[1], 1), /^ {2}2\. +4s +no search +WRONG SOURCE +facts 0\/1 \(missing: lukewarm\) +ASKED BACK +NO ANSWER +MADE-UP SOURCE: made-up\.md +second try +thinking cut +b$/);
+  assert.match(formatRow(rows[1], 1), /^ {2}2\. +4s +no search +WRONG SOURCE +facts 0\/1 \(missing: lukewarm\) +ASKED BACK +NO ANSWER +MADE-UP SOURCE: made-up\.md +second try +thinking cut +asked again +b$/);
   assert.match(formatRow({ ...rows[0], error: "Ollama is gone" }, 0), /ERROR Ollama is gone/);
+});
+
+test("several runs of a model give the mean and the range per column, and a file per run", () => {
+  const row = (extra) => ({ question: "a", model: "m", searched: ["library"], reads: 1, answer: "x", seconds: 2, factsFound: 1, factsTotal: 2, missing: [], rightSource: null, notFoundOk: null, empty: false, unverified: [], ...extra });
+  const runs = [[row({ factsFound: 2 }), row({ unverified: ["made-up.md"] })], [row({}), row({})], [row({ factsFound: 2 }), row({ factsFound: 2, seconds: 5 })]];
+  const results = runs.map((rows, index) => ({ model: "m", run: index + 1, rows, summary: summarize("m", rows) }));
+  const numbers = spread(results.map((result) => result.summary));
+  assert.equal(numbers.runs, 3);
+  assert.deepEqual(numbers.facts, { mean: 75, min: 50, max: 100 });
+  assert.deepEqual(numbers.madeUpSources, { mean: 0.3, min: 0, max: 1 });
+  assert.equal(numbers.rightSource, null, "a column that applies to no question stays empty");
+  // One more model with a single run: its line has plain numbers.
+  const other = { model: "n", run: 1, rows: runs[1], summary: summarize("n", runs[1]) };
+  const table = formatSummary([...results, other]).split("\n");
+  assert.match(table[0], /^model +runs +questions +answered +facts/);
+  assert.match(table[1], /^m +3 +2 +2 +75% \(50-100\) +100% +- +100% +- +0 +0\.3 \(0-1\) +1 +0 +0 +0 +0 +2\.5 \(2-3\.5\)$/);
+  assert.match(table[2], /^n +1 +2 +2 +50% +100% +- +100% +- +0 +0 +1 +0 +0 +0 +0 +2$/);
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "arviro-eval-"));
+  try {
+    const files = saveEval([...results, other], folder, "stamp").map((file) => path.basename(file));
+    assert.deepEqual(files, ["stamp-m-run1.jsonl", "stamp-m-run2.jsonl", "stamp-m-run3.jsonl", "stamp-n.jsonl"]);
+    const first = JSON.parse(fs.readFileSync(path.join(folder, "stamp-m-run2.jsonl"), "utf8").split("\n")[0]);
+    assert.equal(first.run, 2);
+    assert.equal(first.runs, 3);
+    assert.equal(first.summary.facts, 50);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
 });

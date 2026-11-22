@@ -2,13 +2,15 @@
 // The tools are the same MCP tools that any chat app gets (mcp.js), reached through an in-memory
 // MCP client, so what the model sees here is exactly what it sees in Open WebUI. What the chat adds
 // around the model is for small local models: a budget for thinking, a last round without tools, a
-// second try when a turn ends without an answer, and a check of the sources an answer names.
+// second try when a turn ends without an answer, one more try after a tool call Ollama could not
+// read, and a check of the sources an answer names (citations.js).
 import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { checkCitations, createLedger, ledgerFromHistory } from "./citations.js";
 import { createMcpServer } from "./mcp.js";
 import { isEmbeddingModel } from "./setup.js";
-import { normalizeComparable, STOPWORDS, UserInputError } from "./text.js";
+import { UserInputError } from "./text.js";
 
 const DEFAULT_PROMPT_FILE = new URL("../examples/system-prompt.en.md", import.meta.url);
 const MAX_MESSAGE_CHARS = 20_000;
@@ -16,8 +18,6 @@ const MAX_HISTORY = 60;
 const TOOL_PREVIEW_CHARS = 1200;
 const RESCUE_EXCERPTS = 4;
 const RESCUE_EXCERPT_CHARS = 2500;
-const TOOL_SEARCH = "search_library";
-const TOOL_READ = "read_document";
 
 // Notes from Arviro to the model. They go with one request only and never into the conversation the page keeps.
 export const NOTES = Object.freeze({
@@ -74,234 +74,17 @@ async function* ndjson(body) {
   if (buffered.trim()) yield JSON.parse(buffered);
 }
 
-/** `text` without the characters of `set` at its start and its end; plain loops, so linear on any input. */
-function strip(text, set, { start = true, end = true } = {}) {
-  let from = 0;
-  let to = text.length;
-  if (start) while (from < to && set.includes(text[from])) from += 1;
-  if (end) while (to > from && set.includes(text[to - 1])) to -= 1;
-  return text.slice(from, to);
-}
-
-const normalPath = (value) => {
-  let text = strip(strip(String(value || "").trim(), "/", { end: false }), ".:", { start: false });
-  try { text = decodeURIComponent(text); } catch {}
-  return text.toLowerCase();
-};
+export { checkCitations, createLedger };
 
 /**
- * What the tools showed the model: documents it read and search results it saw, each { source, path, title }.
- * Built from the tool calls and results of a conversation, so earlier turns count too.
+ * Whether an error from Ollama says that it could not read the tool call the model wrote
+ * ("expected element type <function> but have <parameter>"). The model rarely writes the same slip twice,
+ * so the round is worth asking once more.
  */
-export function createLedger() {
-  const read = new Map();
-  const seen = new Map();
-  const key = (item) => `${item.source}\u0000${normalPath(item.path)}`;
-  const ledger = {
-    read,
-    seen,
-    sources: new Set(),
-    /** Record one tool call and its result text. */
-    record(name, args = {}, text = "") {
-      if (args.source) ledger.sources.add(String(args.source));
-      const refused = String(text).startsWith(`${name} could not do this`) || String(text).startsWith(`${name} failed`);
-      if (name === TOOL_READ && args.source && args.path && !refused) {
-        const item = { source: String(args.source), path: String(args.path), title: seen.get(key(args))?.title || null };
-        if (!read.has(key(item))) read.set(key(item), item);
-      }
-      if (name === TOOL_SEARCH) {
-        let parsed = null;
-        try { parsed = JSON.parse(text); } catch {}
-        for (const result of parsed?.results || []) {
-          const where = result?.read;
-          if (where?.source && where?.path) {
-            const item = { source: String(where.source), path: String(where.path), title: result.title ? String(result.title) : null };
-            if (!seen.has(key(item))) seen.set(key(item), item);
-          } else if (result?.name) {
-            // A map result has no document; its name is what an answer cites.
-            const item = { source: String(parsed.source || args.source || "maps"), path: "", title: String(result.name) };
-            seen.set(`${item.source}\u0000name:${item.title.toLowerCase()}`, item);
-          }
-        }
-      }
-    },
-    /** Every known document: what was read first, then what was only seen. */
-    all: () => [...read.values(), ...[...seen.values()].filter((item) => !read.has(key(item)))],
-  };
-  return ledger;
-}
-
-/** Fill a ledger from the tool calls and results already in a conversation. */
-function ledgerFromHistory(history) {
-  const ledger = createLedger();
-  let pending = [];
-  for (const message of history) {
-    if (message.role === "assistant") pending = [...(message.tool_calls || [])];
-    else if (message.role === "tool" && pending.length) {
-      const call = pending.shift()?.function || {};
-      ledger.record(call.name, call.arguments && typeof call.arguments === "object" ? call.arguments : {}, message.content);
-    }
-  }
-  return ledger;
-}
-
-const SOURCES_LINE = /^[\s*_#>-]*(?:sources?|bronnen|bron|quellen|quelle)\b[\s*_]*:?/i;
-const NONE_ITEM = /^(?:none|geen|keine|aucune?|-)\b/i;
-const PIECE_SPLIT = /[\s`"'<>,;]+/;
-
-/** A word of an answer without the punctuation around it; brackets stay when they belong to it ("Mercury_(planet)"). */
-function trimPiece(raw) {
-  let piece = strip(strip(raw, "([*_", { end: false }), ".:!?*_", { start: false });
-  const balance = { ")": 0, "]": 0 };
-  for (const character of piece) {
-    if (character === "(") balance[")"] -= 1;
-    else if (character === ")") balance[")"] += 1;
-    else if (character === "[") balance["]"] -= 1;
-    else if (character === "]") balance["]"] += 1;
-  }
-  let end = piece.length;
-  for (;;) {
-    while (end > 0 && ".:!?*_".includes(piece[end - 1])) end -= 1;
-    const last = piece[end - 1];
-    if ((last === ")" || last === "]") && balance[last] > 0) { balance[last] -= 1; end -= 1; }
-    else break;
-  }
-  return piece.slice(0, end);
-}
-
-/** The words of a title or file name that say what it is: lowercase, without accents, punctuation and stopwords. */
-// Words that say where something is in a document, or what kind of thing it is, not which document it is.
-const POINTER_WORDS = new Set(["pagina", "paginas", "page", "pages", "p", "pp", "blz", "s", "line", "lines", "regel", "regels", "seite", "seiten", "zeile"]);
-const GENERIC_WORDS = new Set([
-  "pdf", "artikel", "artikelen", "article", "articles", "entry", "lemma", "sectie", "section", "hoofdstuk", "chapter", "kapitel",
-  "document", "documenten", "documents", "bron", "bronnen", "source", "sources", "quelle", "versie", "edition", "editie",
-  "nederlandstalig", "nederlandstalige", "nederlands", "dutch", "engelstalig", "engelstalige", "engels", "english", "duits", "duitstalig", "german", "frans", "french",
-]);
-
-function contentWords(text) {
-  return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !POINTER_WORDS.has(word) && !GENERIC_WORDS.has(word)));
-}
-
-/** The parts of a text between quotation marks ("Gouda", “Making bread”, 'Water'). One pass, so linear. */
-function quotedParts(text) {
-  const closers = { "\"": "\"", "“": "”", "„": "”", "'": "'", "‘": "’", "«": "»" };
-  const parts = [];
-  let open = null;
-  let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const character = text[index];
-    if (open === null && closers[character]) { open = closers[character]; start = index + 1; }
-    else if (open !== null && character === open) { parts.push(text.slice(start, index)); open = null; }
-  }
-  return parts;
-}
-
-/** The text without what is between brackets: "Pagina 6-7 (Principles of gasification)" becomes "Pagina 6-7 ". */
-function withoutBrackets(text) {
-  let depth = 0;
-  let kept = "";
-  for (const character of text) {
-    if (character === "(" || character === "[") depth += 1;
-    else if ((character === ")" || character === "]") && depth > 0) depth -= 1;
-    else if (!depth) kept += character;
-  }
-  return kept;
-}
-
-/**
- * Whether an item only points into a document ("Werking: Pagina 6-7 (Principles of solid fuel gasification)",
- * "regel 12"): a page or line reference and nothing that names a document, besides a short label and brackets.
- */
-function isPointer(item) {
-  const words = normalizeComparable(withoutBrackets(item)).split(" ").filter(Boolean);
-  if (!words.some((word) => POINTER_WORDS.has(word))) return false;
-  const colon = item.indexOf(":");
-  const label = colon > 0 && colon < 40 ? contentWords(item.slice(0, colon)) : new Set();
-  return [...contentWords(withoutBrackets(item))].every((word) => /^\d+$/.test(word) || label.has(word));
-}
-
-/**
- * Whether a sources item names a known document by its words: (nearly) all words of its title or file name are in
- * the item ("WHO Technical Note 05: Emergency treatment of drinking-water (pages 1-2)" for the file
- * who-technical-note-05-emergency-treatment-drinking-water.pdf), or the item is a shortened title of two words or more.
- */
-function namesByWords(itemWords, knownNames, sourceWords) {
-  if (!itemWords.size) return false;
-  return knownNames.some((names) => {
-    let shared = 0;
-    for (const word of names) if (itemWords.has(word)) shared += 1;
-    if (names.size && shared >= Math.max(1, Math.ceil(names.size * 0.8))) {
-      // A title of one or two words fits inside many made-up ones ("Water" in "Water purification handbook"):
-      // then the item may add nothing but source names and page numbers.
-      if (names.size > 2) return true;
-      return [...itemWords].every((word) => names.has(word) || sourceWords.has(word) || /^\d+$/.test(word));
-    }
-    // A shortened title: two or more of its words, and nothing else but source names and numbers.
-    const meaningful = [...itemWords].filter((word) => !sourceWords.has(word) && !/^\d+$/.test(word));
-    return meaningful.length >= 2 && meaningful.every((word) => names.has(word));
-  });
-}
-
-/**
- * The references in an answer that no tool showed the model: paths that were never in a search result or read,
- * and items of a closing "Sources:" line that name no known document, title or source.
- * Everything here works on plain splits and string comparisons, so it stays linear in the length of the answer.
- */
-export function checkCitations(answer, ledger) {
-  const text = String(answer || "");
-  const known = ledger.all();
-  const paths = known.filter((item) => item.path).map((item) => normalPath(item.path));
-  const titles = known.map((item) => String(item.title || "").toLowerCase()).filter((title) => title.length >= 3);
-  // The words of each title and each file name, for an item that cites a document in its own words.
-  const knownNames = known.flatMap((item) => [contentWords(item.title || ""), contentWords(String(item.path || "").split("/").at(-1).replace(/\.[a-z0-9]{1,5}$/i, ""))]).filter((names) => names.size);
-  const sourceIds = new Set([...ledger.sources, ...known.map((item) => item.source)].map((id) => id.toLowerCase()));
-  const sourceWords = new Set([...sourceIds].flatMap((id) => normalizeComparable(id).split(" ")));
-  const knownPath = (piece) => {
-    const wanted = normalPath(piece);
-    return paths.some((candidate) => candidate === wanted || candidate.endsWith(`/${wanted}`) || wanted.endsWith(`/${candidate}`));
-  };
-  const unverified = [];
-  const flag = (value) => { if (!unverified.includes(value)) unverified.push(value); };
-
-  // Paths and links: a piece with a slash that looks like a document path or an encyclopedia link.
-  for (const raw of text.split(PIECE_SPLIT)) {
-    const piece = trimPiece(raw);
-    if (!piece.includes("/") || /^[a-z][a-z0-9+.-]*:\/\//i.test(piece)) continue;
-    const looksLikeDocument = /\.[a-z0-9]{1,5}$/i.test(piece) || piece.startsWith("/kiwix/") || piece.startsWith("kiwix/");
-    if (!looksLikeDocument) continue;
-    const withoutSource = [...sourceIds].some((id) => piece.toLowerCase().startsWith(`${id}/`)) ? piece.slice(piece.indexOf("/") + 1) : piece;
-    if (!knownPath(piece) && !knownPath(withoutSource)) flag(piece);
-  }
-
-  // The closing sources line, item by item.
-  const lines = text.split("\n");
-  const index = lines.findLastIndex((line) => SOURCES_LINE.test(line));
-  if (index >= 0) {
-    const head = lines[index].replace(SOURCES_LINE, "");
-    const items = head.split(/;| \| /).map((item) => item.trim());
-    for (const line of lines.slice(index + 1)) {
-      const bullet = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
-      if (bullet) items.push(bullet[1].trim());
-      else if (line.trim()) break;
-    }
-    for (const item of items.map((value) => strip(strip(value, "*_ \t", { end: false }), "*_. \t", { start: false })).filter(Boolean)) {
-      if (NONE_ITEM.test(item)) continue;
-      const lower = item.toLowerCase();
-      // Literally: the same title, a longer title inside the item, or the item inside a title. Short titles go by their words below.
-      const quoted = quotedParts(item).map((part) => contentWords(part)).filter((words) => words.size);
-      const named = titles.some((title) => lower === title || (lower.includes(title) && contentWords(title).size > 2) || (title.includes(lower) && contentWords(lower).size >= 2))
-        // A title in quotation marks, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
-        || quoted.some((words) => knownNames.some((names) => names.size === words.size && [...words].every((word) => names.has(word))))
-        || namesByWords(contentWords(item), knownNames, sourceWords)
-        // A page or line of a document that was read, written as an item of its own.
-        || (ledger.read.size > 0 && isPointer(item))
-        || item.split(PIECE_SPLIT).some((piece) => piece.includes("/") && knownPath(trimPiece(piece)))
-        || [...sourceIds].some((id) => lower === id || lower.startsWith(`${id} `) || lower.startsWith(`${id}:`) || lower.startsWith(`${id}/`));
-      // A path in the item was already judged above.
-      if (!named && !item.split(PIECE_SPLIT).some((piece) => unverified.includes(trimPiece(piece)))) flag(item);
-    }
-  }
-  return unverified;
+export function isUnreadableToolCall(message) {
+  const text = String(message || "").toLowerCase();
+  return text.includes("expected element type") || text.includes("parsing tool call") || text.includes("error parsing tool")
+    || text.includes("unexpected end of json") || text.includes("invalid character") || text.includes("unexpected eof");
 }
 
 /** Whether a final message holds no answer: nothing, or a tool call written out as text. */
@@ -347,7 +130,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
    * Yields events for the page: { type: "thinking", text }, { type: "token", text }, { type: "tool", name, args },
    * { type: "toolResult", name, text }, { type: "message", message } (an assistant or tool message to keep in the history),
    * { type: "note", text } (what Arviro did, for the reader), { type: "retry" } (what streamed so far is not the answer),
-   * and last { type: "turn", read, seen, unverified, looked, rescued, thinkCut, rounds }.
+   * and last { type: "turn", read, seen, unverified, looked, rescued, thinkCut, reasked, rounds }.
    */
   async function* run({ messages, model, signal, sessionKey = "chat" }) {
     const arviro = getArviro();
@@ -359,7 +142,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
     if (!arviro.sources("all").length) throw new UserInputError("There are no sources yet; add some under Library.");
     const history = [{ role: "system", content: systemPrompt(config) }, ...cleanHistory(messages)];
     const ledger = ledgerFromHistory(history);
-    const facts = { looked: false, rescued: false, thinkCut: false, rounds: 0 };
+    const facts = { looked: false, rescued: false, thinkCut: false, reasked: 0, rounds: 0 };
     const tools = await connectTools(arviro, sessionKey);
 
     /** One request to Ollama, streamed. Returns { content, toolCalls, doneReason, cut } once the model is done. */
@@ -451,7 +234,20 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         const outgoing = note ? [...history, { role: "user", content: note }] : history;
         const nudged = Boolean(note);
         note = null;
-        const result = yield* ask({ outgoing, offerTools, think: nudged ? false : config.chat.think, budget: nudged ? 0 : config.chat.thinkBudget });
+        let result;
+        for (let attempt = 1; ; attempt += 1) {
+          try {
+            result = yield* ask({ outgoing, offerTools, think: nudged ? false : config.chat.think, budget: nudged ? 0 : config.chat.thinkBudget });
+            break;
+          } catch (error) {
+            // Ollama could not read the tool call the model wrote: ask this round once more instead of ending the turn.
+            if (attempt > 1 || signal?.aborted || !isUnreadableToolCall(error.message)) throw error;
+            log(`chat: ${error.message}; asking the round again`);
+            facts.reasked += 1;
+            yield { type: "retry" };
+            yield { type: "note", text: "The model wrote a tool call that Ollama could not read; the round was asked again." };
+          }
+        }
         if (result.cut) {
           facts.thinkCut = true;
           yield { type: "note", text: `Thinking was stopped after ${config.chat.thinkBudget} tokens (chat.thinkBudget); the model was asked to go on without it.` };
@@ -483,7 +279,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
             yield { type: "retry" };
             yield { type: "token", text: ending };
           }
-          const unverified = checkCitations(content, ledger);
+          const unverified = checkCitations(content, ledger, { sources: arviro.sources("all") });
           if (unverified.length) {
             const warning = `\n\n[Arviro did not find ${unverified.map((item) => `"${item}"`).join(", ")} among the documents searched or read in this conversation; check it before relying on it.]`;
             content += warning;
@@ -492,7 +288,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
           const assistant = { role: "assistant", content };
           history.push(assistant);
           yield { type: "message", message: assistant };
-          yield { type: "turn", read: [...ledger.read.values()], seen: ledger.all().filter((item) => !ledger.read.has(`${item.source}\u0000${normalPath(item.path)}`)), unverified, ...facts };
+          yield { type: "turn", read: [...ledger.read.values()], seen: ledger.onlySeen(), unverified, ...facts };
           return;
         }
 
