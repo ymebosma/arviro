@@ -2,8 +2,8 @@
 // The tools are the same MCP tools that any chat app gets (mcp.js), reached through an in-memory
 // MCP client, so what the model sees here is exactly what it sees in Open WebUI. What the chat adds
 // around the model is for small local models: a budget for thinking, a last round without tools, a
-// second try when a turn ends without an answer, one more try after a tool call Ollama could not
-// read, and a check of the sources an answer names (citations.js).
+// second try when a turn ends without an answer, one more try for a round that returns nothing or a
+// tool call Ollama could not read, and a check of the sources an answer names (citations.js).
 import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -238,7 +238,6 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         for (let attempt = 1; ; attempt += 1) {
           try {
             result = yield* ask({ outgoing, offerTools, think: nudged ? false : config.chat.think, budget: nudged ? 0 : config.chat.thinkBudget });
-            break;
           } catch (error) {
             // Ollama could not read the tool call the model wrote: ask this round once more instead of ending the turn.
             if (attempt > 1 || signal?.aborted || !isUnreadableToolCall(error.message)) throw error;
@@ -246,7 +245,16 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
             facts.reasked += 1;
             yield { type: "retry" };
             yield { type: "note", text: "The model wrote a tool call that Ollama could not read; the round was asked again." };
+            continue;
           }
+          // Nothing at all came back before any lookup: no text, no tool call, no error. A second try with what
+          // the model found does not apply yet, so the round itself is asked once more.
+          const nothing = !result.cut && !facts.looked && result.doneReason !== "length" && !(offerTools && result.toolCalls.length) && isEmptyAnswer(result.content);
+          if (attempt > 1 || !nothing || signal?.aborted) break;
+          log("chat: the model returned nothing; asking the round again");
+          facts.reasked += 1;
+          yield { type: "retry" };
+          yield { type: "note", text: "The model returned nothing; the round was asked again." };
         }
         if (result.cut) {
           facts.thinkCut = true;

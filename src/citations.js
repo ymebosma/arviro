@@ -9,6 +9,9 @@ const TOOL_SEARCH = "search_library";
 const TOOL_READ = "read_document";
 // A sources item longer than this is a sentence about the sources, not a source.
 const PROSE_WORDS = 25;
+// The beginning of a read holds the title the document prints, which can differ from its file name.
+const OPENING_CHARS = 1200;
+const MAX_OPENING_PHRASES = 20_000;
 
 /** `text` without the characters of `set` at its start and its end; plain loops, so linear on any input. */
 function strip(text, set, { start = true, end = true } = {}) {
@@ -42,6 +45,8 @@ export function createLedger() {
     sources: new Set(),
     // Sources whose results are places on a map: they have no documents to cite.
     mapSources: new Set(),
+    // Every three words in a row at the beginning of a read, where a document prints its own title.
+    openings: new Set(),
     /** Record one tool call and its result text. */
     record(name, args = {}, text = "") {
       if (args.source) ledger.sources.add(String(args.source));
@@ -51,6 +56,8 @@ export function createLedger() {
         if (!read.has(key(item))) read.set(key(item), item);
         if (!shown.has(key(item))) shown.set(key(item), { pages: new Set(), ranges: [] });
         const positions = shown.get(key(item));
+        const opening = normalizeComparable(String(text).slice(0, OPENING_CHARS)).split(" ");
+        for (let at = 0; at + 2 < opening.length && ledger.openings.size < MAX_OPENING_PHRASES; at += 1) ledger.openings.add(`${opening[at]} ${opening[at + 1]} ${opening[at + 2]}`);
         for (const line of String(text).split("\n", 400)) {
           if (line.startsWith("page ")) {
             const page = Number(line.slice(5));
@@ -149,9 +156,33 @@ const GENERIC_WORDS = new Set([
   "offline", "lokaal", "lokale", "local", "category", "categorie", "region", "regio", "kiwix",
 ]);
 
+/**
+ * A word in the form names are compared in, so that a model's spelling of a title matches the file name:
+ * letters and digits apart ("2025plus" is "2025" and "plus"), numbers without leading zeros ("01" is "1"),
+ * and a plural like its singular ("manuals", "handleidingen"). One pass over the word.
+ */
+function nameParts(word) {
+  const parts = [];
+  let start = 0;
+  const isDigit = (character) => character >= "0" && character <= "9";
+  for (let index = 1; index <= word.length; index += 1) {
+    if (index < word.length && isDigit(word[index]) === isDigit(word[start])) continue;
+    let part = word.slice(start, index);
+    if (isDigit(part[0])) {
+      let zeros = 0;
+      while (zeros < part.length - 1 && part[zeros] === "0") zeros += 1;
+      part = part.slice(zeros);
+    } else if (part.length >= 6 && part.endsWith("en")) part = part.slice(0, -2);
+    else if (part.length >= 4 && part.endsWith("s") && !part.endsWith("ss")) part = part.slice(0, -1);
+    parts.push(part);
+    start = index;
+  }
+  return parts;
+}
+
 /** The words of a title or file name that say what it is: lowercase, without accents, punctuation and stopwords. */
 function contentWords(text) {
-  return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !POINTER_WORDS.has(word) && !GENERIC_WORDS.has(word)));
+  return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !POINTER_WORDS.has(word) && !GENERIC_WORDS.has(word)).flatMap(nameParts));
 }
 
 /** The parts of a text between quotation marks ("Gouda", “Making bread”, 'Water'). One pass, so linear. */
@@ -299,6 +330,13 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     return titles.some((title) => lower === title || (lower.includes(title) && contentWords(title).size > 2) || (title.includes(lower) && contentWords(lower).size >= 2))
       || namesByWords(contentWords(candidate), knownNames, sourceWords, pageNumbers);
   };
+  // The title a document prints at its beginning, which a read showed: three words of content or more, word for word.
+  const printedTitle = (candidate) => {
+    const row = normalizeComparable(candidate).split(" ");
+    if (row.length < 3 || contentWords(candidate).size < 3) return false;
+    for (let at = 0; at + 2 < row.length; at += 1) if (!ledger.openings.has(`${row[at]} ${row[at + 1]} ${row[at + 2]}`)) return false;
+    return true;
+  };
   for (const item of items.map((value) => strip(strip(value, "*_ \t(", { end: false }), "*_. \t", { start: false })).filter(Boolean)) {
     if (NONE_ITEM.test(item)) continue;
     const pieces = item.split(PIECE_SPLIT).map(trimPiece);
@@ -311,7 +349,7 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     const itemWords = contentWords(item);
     const numbers = pointerNumbers(item);
     const pageNumbers = new Set(numbers.map((pointer) => pointer.number));
-    const named = heads(item).some((candidate) => titleNamed(candidate, pageNumbers))
+    const named = heads(item).some((candidate) => titleNamed(candidate, pageNumbers) || printedTitle(candidate))
       // A title in quotation marks, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
       || quotedParts(item).map((part) => contentWords(part)).some((quoted) => quoted.size && knownNames.some((names) => names.size === quoted.size && [...quoted].every((word) => names.has(word))))
       // A page or line of a document that was read, written as an item of its own.

@@ -79,18 +79,21 @@ test("the summary counts per model, and the lines say what went wrong", () => {
   ];
   rows[1].askedBack = true;
   const summary = summarize("m", rows);
-  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 67, rightSource: 50, read: 33, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, secondsAverage: 3 });
+  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 100, rightSource: 100, read: 50, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, secondsAverage: 3 });
   const table = formatSummary([{ model: "m", run: 1, rows, summary }]);
   assert.match(table, /^model +questions +answered +facts/);
   assert.match(table, /thinking cut +asked again +seconds$/m);
-  assert.match(table, /\nm +3 +2 +67% +67% +50% +33% +100% +1 +1 +2 +1 +1 +1 +1 +3$/);
+  assert.match(table, /\nm +3 +2 +67% +100% +100% +50% +100% +1 +1 +2 +1 +1 +1 +1 +3$/);
   assert.match(formatRow(rows[2], 2), /searched wikipedia x3, library +MANY SEARCHES \(4\)/);
   assert.match(formatRow(rows[1], 1), /ASKED BACK/);
   assert.match(formatRow(rows[0], 0), /searched library x2 +REPEATED SEARCH x1 +read 1/);
   const long = formatRow({ ...rows[1], unverified: ["A".repeat(100), "b", "c", "d", "e"] }, 1);
   assert.match(long, /MADE-UP SOURCE: A{57}\.\.\.; b; c \(\+2\)/);
-  assert.match(formatRow(rows[1], 1), /^ {2}2\. +4s +no search +WRONG SOURCE +facts 0\/1 \(missing: lukewarm\) +ASKED BACK +NO ANSWER +MADE-UP SOURCE: made-up\.md +second try +thinking cut +asked again +b$/);
+  assert.match(formatRow(rows[1], 1), /^ {2}2\. +4s +facts 0\/1 \(missing: lukewarm\) +ASKED BACK +NO ANSWER +MADE-UP SOURCE: made-up\.md +second try +thinking cut +asked again +b$/);
   assert.match(formatRow({ ...rows[0], error: "Ollama is gone" }, 0), /ERROR Ollama is gone/);
+  // An answer without a search is still "no search" and can have the wrong source; only a turn with nothing at all is left out.
+  assert.match(formatRow({ ...rows[1], empty: false, answer: "From memory." }, 1), /no search +WRONG SOURCE/);
+  assert.equal(summarize("m", [rows[0], { ...rows[1], empty: false }]).searched, 50);
 });
 
 test("several runs of a model give the mean and the range per column, and a file per run", () => {

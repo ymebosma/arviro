@@ -156,11 +156,16 @@ async function askOne(chat, model, item, sessionKey) {
   return row;
 }
 
+/** A turn in which the model did nothing: no search and no answer. It counts as not answered, and only as that. */
+const didNothing = (row) => row.empty && !row.searched.length;
+
 /** Totals per model. Percentages are of the questions they apply to. */
 export function summarize(model, rows) {
   const count = (test) => rows.filter(test).length;
   const share = (part, whole) => (whole ? Math.round((part / whole) * 100) : null);
-  const withSource = rows.filter((row) => row.rightSource !== null);
+  // What the model did with the library is measured over the turns in which it did something.
+  const acted = rows.filter((row) => !didNothing(row));
+  const withSource = acted.filter((row) => row.rightSource !== null);
   const notFound = rows.filter((row) => row.notFoundOk !== null);
   const factsTotal = rows.reduce((sum, row) => sum + row.factsTotal, 0);
   return {
@@ -169,9 +174,9 @@ export function summarize(model, rows) {
     errors: count((row) => row.error),
     answered: count((row) => !row.empty && !row.error),
     facts: share(rows.reduce((sum, row) => sum + row.factsFound, 0), factsTotal),
-    searched: share(count((row) => row.searched.length > 0), rows.length),
+    searched: share(count((row) => row.searched.length > 0), acted.length),
     rightSource: share(withSource.filter((row) => row.rightSource).length, withSource.length),
-    read: share(count((row) => row.reads > 0), rows.length),
+    read: share(count((row) => row.reads > 0), acted.length),
     notFound: share(notFound.filter((row) => row.notFoundOk).length, notFound.length),
     madeUpSources: rows.reduce((sum, row) => sum + (row.unverified?.length || 0), 0),
     repeatedSearches: rows.reduce((sum, row) => sum + (row.repeated || 0), 0),
@@ -260,10 +265,10 @@ export function formatRow(row, index) {
   const parts = [`${String(index + 1).padStart(3)}.`, `${row.seconds}s`.padStart(7)];
   if (row.error) parts.push(`ERROR ${row.error}`);
   else {
-    parts.push(row.searched.length ? `searched ${groupCounts(row.searched)}` : "no search");
+    if (!didNothing(row)) parts.push(row.searched.length ? `searched ${groupCounts(row.searched)}` : "no search");
     if (row.repeated) parts.push(`REPEATED SEARCH x${row.repeated}`);
     else if (row.searched.length >= MANY_SEARCHES) parts.push(`MANY SEARCHES (${row.searched.length})`);
-    if (row.rightSource === false) parts.push("WRONG SOURCE");
+    if (row.rightSource === false && !didNothing(row)) parts.push("WRONG SOURCE");
     if (row.reads) parts.push(`read ${row.reads}`);
     if (row.factsTotal) parts.push(`facts ${row.factsFound}/${row.factsTotal}${row.missing.length ? ` (missing: ${row.missing.join("; ")})` : ""}`);
     if (row.notFoundOk === false) parts.push("DID NOT SAY IT IS NOT THERE");

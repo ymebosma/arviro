@@ -105,9 +105,43 @@ test("checkCitations accepts real sources in the model's own words (issue 11), a
   assert.deepEqual(checkCitations("Answer.\n\nSources: OpenStreetMap via maps", noMap), ["OpenStreetMap via maps"]);
 });
 
+test("checkCitations accepts a title in another spelling than the file name, and the title a document prints", () => {
+  const known = createLedger();
+  const results = (list) => JSON.stringify({ source: "library", results: list.map(([path, title]) => ({ title, read: { source: "library", path } })) });
+  known.record("search_library", { source: "library", query: "manual" }, results([
+    ["manuals/example-car-2025plus-manual-nl.pdf", "example car 2025plus manual nl"],
+    ["manuals/example-tv-x100-e-manual-nl.pdf", "example tv x100 e manual nl"],
+    ["manuals/example-tv-x100-user-manual-nl.pdf", "example tv x100 user manual nl"],
+    ["water/technical-note-01-cleaning-and-disinfecting-wells.pdf", "technical note 01 cleaning and disinfecting wells"],
+    ["water/example-org-household-water-2019.pdf", "example org household water 2019"],
+  ]));
+  known.record("read_document", { source: "library", path: "water/technical-note-01-cleaning-and-disinfecting-wells.pdf" }, "source: library\npage 1\n1.1 | Cleaning and disinfecting wells");
+  known.record("read_document", { source: "library", path: "water/example-org-household-water-2019.pdf" }, "source: library\npage 1\n1.1 | Safe water at home\n1.2 | A practical guide to storing and treating\n1.3 | household water\n1.4 | www.example.org");
+  const sources = [{ id: "library", description: "Documents of the household" }];
+  const flagged = (item) => checkCitations(`Answer.\n\nSources:\n- ${item}`, known, { sources });
+  for (const real of [
+    // "2025+" for "2025plus", with a page and a quoted section behind it.
+    'Manual Example Car 2025+, page 270 (section: "Opening the doors")',
+    // A plural for two documents.
+    "offline library, Example TV X100 manuals",
+    // "1" for "01", and a shortened title in quotation marks.
+    'Technical Note 1 "Cleaning wells"',
+    // The title printed on the first page, which the file name does not hold.
+    "Safe water at home (www.example.org)",
+    "Safe water at home: A practical guide to storing and treating household water",
+  ]) assert.deepEqual(flagged(real), [], real);
+  for (const madeUp of [
+    'Technical Note 7 "Cleaning wells"',
+    "Example TV X200 manuals",
+    "Example Car 2024 manual",
+    "Safe water for travellers (www.example.org)",
+    "Safe water",
+  ]) assert.deepEqual(flagged(madeUp), [madeUp], madeUp);
+});
+
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);

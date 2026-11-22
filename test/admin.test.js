@@ -77,6 +77,13 @@ function startFakeOllama() {
           line({ role: "assistant", content: "Answer after a second try." });
           return finish();
         }
+        // "silent" returns nothing at all the first time (no text, no tool call, no error); "silent-always" every time.
+        if (request.model.startsWith("silent")) {
+          garbled[request.model] = (garbled[request.model] || 0) + 1;
+          if (request.model === "silent-always" || garbled[request.model] === 1) return finish();
+          line({ role: "assistant", content: "Answer after a silent round." });
+          return finish();
+        }
         // "citer" searches once and then names a document and a title it never saw.
         if (request.model === "citer") {
           if (last.role === "user") return search(last.content);
@@ -652,6 +659,19 @@ test("the chat helps small models: a last round without tools, a second try, a t
     const always = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "garbler-always" });
     assert.equal(always.events.at(-1).type, "error");
     assert.equal(types(always.events).filter((type) => type === "note").length, 1);
+
+    // A first round that returns nothing at all: asked once more; nothing again ends the turn with the usual line.
+    ollama.chats.length = 0;
+    const silent = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "silent" });
+    assert.equal(answerOf(silent.events), "Answer after a silent round.");
+    assert.match(silent.events.find((event) => event.type === "note").text, /returned nothing; the round was asked again/);
+    assert.equal(silent.events.find((event) => event.type === "turn").reasked, 1);
+    assert.equal(ollama.chats.length, 2);
+    ollama.chats.length = 0;
+    const silentAlways = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "silent-always" });
+    assert.match(answerOf(silentAlways.events), /^\[The model gave no answer/);
+    assert.equal(silentAlways.events.find((event) => event.type === "turn").reasked, 1);
+    assert.equal(ollama.chats.length, 2, "asked again once, not more");
 
     // Sources it never saw are pointed out; the ones it saw are fine, with or without the source id in front.
     const citer = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "citer" });
