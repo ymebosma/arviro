@@ -410,11 +410,14 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     // null leaves thinking to the model; false switches it off for models that can (Ollama's `think`).
     think: chatInput.think == null ? null : Boolean(chatInput.think),
     maxRounds: Number(chatInput.maxRounds ?? 6),
+    // A check round on the answer: "off", "not-found" (only after an answer that says something was not found) or "always".
+    check: String(chatInput.check ?? "not-found"),
   };
   if (!Number.isInteger(chat.numCtx) || chat.numCtx < 1024) throw new ConfigError("chat.numCtx must be a whole number of at least 1024.");
   if (!Number.isInteger(chat.numPredict) || chat.numPredict < 256) throw new ConfigError("chat.numPredict must be a whole number of at least 256.");
   if (!Number.isInteger(chat.timeoutSeconds) || chat.timeoutSeconds < 1) throw new ConfigError("chat.timeoutSeconds must be a whole number of seconds.");
   if (!Number.isInteger(chat.maxRounds) || chat.maxRounds < 1 || chat.maxRounds > 20) throw new ConfigError("chat.maxRounds must be a whole number from 1 to 20.");
+  if (!["off", "not-found", "always"].includes(chat.check)) throw new ConfigError('chat.check must be "off", "not-found" or "always".');
   if (!Number.isInteger(chat.thinkBudget) || chat.thinkBudget < 0) throw new ConfigError("chat.thinkBudget must be a whole number of tokens, or 0 for no limit.");
 
   const guardInput = asObject(input.guard, "guard");

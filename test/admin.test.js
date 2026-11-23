@@ -84,6 +84,23 @@ function startFakeOllama() {
           line({ role: "assistant", content: "Answer after a silent round." });
           return finish();
         }
+        // "checker" says it found nothing, and finds it when asked to check; "checker-right" answers and repeats its answer;
+        // "checker-silent" returns nothing in the check; "checker-remark" only says that nothing needs to change.
+        if (request.model.startsWith("checker")) {
+          const first = request.model === "checker" ? "I could not find that in the library." : `Cool a burn under running water for ten minutes. ${"Keep the person warm. ".repeat(10)}Source: manuals/first-aid.md`;
+          const checking = request.messages.some((message) => message.role === "user" && String(message.content).startsWith("(Note from Arviro, not the user: check your answer"));
+          if (!checking) {
+            if (last.role === "user") return search(last.content);
+            line({ role: "assistant", content: first });
+            return finish();
+          }
+          if (request.model === "checker-silent") return finish();
+          if (request.model === "checker-remark") { line({ role: "assistant", content: "Nothing needs to change." }); return finish(); }
+          if (request.model === "checker-right") { line({ role: "assistant", content: first }); return finish(); }
+          if (last.role !== "tool") return search("cooling a burn");
+          line({ role: "assistant", content: "Cool a burn for ten minutes. Source: manuals/first-aid.md" });
+          return finish();
+        }
         // "citer" searches once and then names a document and a title it never saw.
         if (request.model === "citer") {
           if (last.role === "user") return search(last.content);
@@ -684,6 +701,80 @@ test("the chat helps small models: a last round without tools, a second try, a t
   writeConfig();
 });
 
+test("the check round: the model compares its answer with what it found, and the first answer stands when the check gives none", async () => {
+  const types = (events) => events.map((event) => event.type);
+  const answerOf = (events) => events.filter((event) => event.type === "message" && event.message.role === "assistant").at(-1).message.content;
+  const turnOf = (events) => events.find((event) => event.type === "turn");
+  const ask = (base, model, content = "How long should I cool a burn?") => chatTurn(base, { messages: [{ role: "user", content }], model });
+  const isCheck = (message) => message.role === "user" && message.content.startsWith("(Note from Arviro, not the user: check your answer");
+  // By default only an answer that says something was not found is checked.
+  const byDefault = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest" } });
+  try {
+    ollama.chats.length = 0;
+    const found = await ask(byDefault.url, "checker");
+    assert.equal(answerOf(found.events), "Cool a burn for ten minutes. Source: manuals/first-aid.md");
+    assert.deepEqual(types(found.events), ["message", "tool", "toolResult", "message", "token", "draft", "note", "message", "tool", "toolResult", "message", "token", "message", "turn", "done"]);
+    assert.equal(found.events.find((event) => event.type === "draft").message.content, "I could not find that in the library.");
+    assert.match(found.events.find((event) => event.type === "note").text, /asked to check its answer/);
+    assert.equal(turnOf(found.events).checked, true);
+    assert.equal(turnOf(found.events).checkChanged, true);
+    // The model saw its first answer and the request during the check, with the lookups of the check behind them...
+    assert.equal(ollama.chats.length, 4);
+    const lastRequest = ollama.chats[3].messages;
+    assert.deepEqual(lastRequest.map((message) => message.role), ["system", "user", "assistant", "tool", "assistant", "user", "assistant", "tool"]);
+    assert.equal(lastRequest[4].content, "I could not find that in the library.");
+    assert.ok(isCheck(lastRequest[5]));
+    assert.ok(ollama.chats[2].tools, "the check may look things up");
+    // ...and neither is kept in the conversation of the page: the lookups and the final answer are.
+    const kept = found.events.filter((event) => event.type === "message").map((event) => event.message);
+    assert.deepEqual(kept.map((message) => message.role), ["assistant", "tool", "assistant", "tool", "assistant"]);
+    assert.ok(!kept.some((message) => message.content === "I could not find that in the library." || isCheck(message)));
+    // An answer that does not say "not found" is not checked in this mode, and neither is a greeting.
+    ollama.chats.length = 0;
+    const right = await ask(byDefault.url, "checker-right");
+    assert.equal(turnOf(right.events).checked, false);
+    assert.equal(ollama.chats.length, 2);
+  } finally {
+    await byDefault.close();
+  }
+  const always = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always" } });
+  try {
+    // The same answer again: checked, not changed.
+    ollama.chats.length = 0;
+    const right = await ask(always.url, "checker-right");
+    assert.equal(ollama.chats.length, 3);
+    assert.equal(turnOf(right.events).checked, true);
+    assert.equal(turnOf(right.events).checkChanged, false);
+    assert.match(answerOf(right.events), /^Cool a burn under running water for ten minutes\./);
+    // No answer from the check, or a remark instead of the answer: the first answer stands, and is written again.
+    for (const model of ["checker-silent", "checker-remark"]) {
+      const kept = await ask(always.url, model);
+      assert.match(answerOf(kept.events), /^Cool a burn under running water for ten minutes\./, model);
+      assert.equal(turnOf(kept.events).checkChanged, false, model);
+      assert.ok(kept.events.some((event) => event.type === "note" && /the first answer stands/.test(event.text)), model);
+      const after = kept.events.slice(kept.events.findLastIndex((event) => event.type === "retry"));
+      assert.match(after.filter((event) => event.type === "token").map((event) => event.text).join(""), /^Cool a burn under running water/, model);
+    }
+    // An answer without any lookup has nothing to be checked against.
+    ollama.chats.length = 0;
+    const greeting = await chatTurn(always.url, { messages: [{ role: "user", content: "hi" }], model: "silent-check" });
+    assert.equal(turnOf(greeting.events).checked, false);
+  } finally {
+    await always.close();
+  }
+  const off = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "off" } });
+  try {
+    ollama.chats.length = 0;
+    const plain = await ask(off.url, "checker");
+    assert.equal(answerOf(plain.events), "I could not find that in the library.");
+    assert.equal(turnOf(plain.events).checked, false);
+    assert.equal(ollama.chats.length, 2);
+  } finally {
+    await off.close();
+  }
+  writeConfig();
+});
+
 test("arviro eval asks each model the questions through the chat and measures the answers", async () => {
   writeConfig({ chat: { url: ollama.url(), maxRounds: 2 } });
   const questions = path.join(fixture.root, "eval-questions.json");
@@ -729,6 +820,17 @@ test("arviro eval asks each model the questions through the chat and measures th
   });
   assert.equal(wrong.code, 2);
   assert.match(wrong.stderr, /--runs is a whole number from 1 to 20/);
+  // The check round (chat.check, by default after a "not found" answer): the line and the table show what it changed.
+  const checkedRun = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "checker", "--save", path.join(fixture.root, "eval-check")], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
+  });
+  assert.equal(checkedRun.code, 0, checkedRun.stderr);
+  assert.match(checkedRun.stdout, /\n +1\. .*facts 1\/2 \(missing: based on the library\) +check changed the answer \(facts before: 0\/2\)/);
+  assert.match(checkedRun.stdout, /seconds +checked +check changed +facts before check\n/);
+  assert.match(checkedRun.stdout, /\nchecker +2 +2 +50% .* 2 +2 +0%\n/);
+  const checkedLines = fs.readFileSync(path.join(fixture.root, "eval-check", fs.readdirSync(path.join(fixture.root, "eval-check"))[0]), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(checkedLines[1].firstAnswer, "I could not find that in the library.");
+  assert.equal(checkedLines[1].answer, "Cool a burn for ten minutes. Source: manuals/first-aid.md");
   // Without a model there is nothing to ask.
   const none = await new Promise((resolve) => {
     execFile(process.execPath, [cli, "eval", questions, "--config", configPath], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));

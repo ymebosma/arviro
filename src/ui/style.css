@@ -79,6 +79,7 @@ textarea { font: inherit; padding: 7px 10px; border: 1px solid var(--line); bord
 .msg.assistant h3, .msg.assistant h4, .msg.assistant h5, .msg.assistant h6 { margin: 6px 0 4px; font-size: 15px; }
 .msg.assistant pre { background: var(--card); }
 .msg.assistant code { background: var(--card); }
+.msg.assistant.draft { opacity: 0.55; }
 .msg.assistant:empty::after { content: "…"; color: var(--muted); }
 .msg.error { align-self: flex-start; color: var(--bad); border: 1px solid var(--bad); }
 .call { align-self: flex-start; font-size: 13px; color: var(--muted); max-width: 85%; }

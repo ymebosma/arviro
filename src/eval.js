@@ -4,18 +4,14 @@
 // The questions are the owner's, about the owner's library; examples/eval.example.json shows the format.
 import fs from "node:fs";
 import path from "node:path";
+import { saysNotFound } from "./answers.js";
 import { createChat } from "./chat.js";
 import { ConfigError } from "./config.js";
 import { normalizeComparable } from "./text.js";
 
-const MAX_QUESTIONS = 500;
-// Words an answer uses to say the library does not have something (English, Dutch, German, French).
-const NOT_FOUND_PHRASES = [
-  "not in the", "not found", "could not find", "couldn t find", "cannot find", "can t find", "no information", "does not contain", "doesn t contain", "not mentioned",
-  "niet in de", "niet gevonden", "kon niet vinden", "kan niet vinden", "geen informatie", "staat niet", "niet te vinden", "kon ik niet", "kan ik niet",
-  "nicht gefunden", "keine information", "nicht enthalten", "pas trouve", "aucune information",
-];
+export { saysNotFound };
 
+const MAX_QUESTIONS = 500;
 /**
  * The questions of an eval file: { questions: [...] } or a plain list. Each question is
  * { question, source?: id or [ids], facts?: [[alternatives], ...], expect?: "answer" | "not-found" }.
@@ -45,45 +41,6 @@ export function loadEvalQuestions(file) {
 export function factsIn(answer, facts) {
   const text = normalizeComparable(answer);
   return facts.filter((fact) => fact.some((wording) => text.includes(normalizeComparable(wording))));
-}
-
-// Words that deny, and words about finding or having information. A denial near such a word says "it is not there"
-// in more ways than a list of phrases can hold: "Ik kan dit telefoonnummer niet vinden in de lokale bibliotheek".
-const DENIALS = new Set(["not", "no", "cannot", "unable", "don", "doesn", "isn", "couldn", "can", "niet", "geen", "nergens", "nicht", "kein", "keine", "keinen", "pas", "aucun", "aucune", "ni"]);
-const NEEDS_T = new Set(["can", "don", "doesn", "isn", "couldn"]);
-// Words that are about finding or holding information and little else: they count anywhere in the sentence of the
-// denial, since Dutch and German put the participle at the end ("Er is geen instructie voor ... gevonden").
-const FINDING = new Set([
-  "find", "found", "contain", "contains", "available", "information", "library", "libraries", "source", "sources", "documents", "records", "mentioned", "listed", "included",
-  "vinden", "gevonden", "vind", "bevat", "bevatten", "beschikbaar", "beschikbare", "informatie", "gegevens", "bibliotheek", "bibliotheken", "bron", "bronnen", "documenten", "opgenomen", "vermeld",
-  "finden", "gefunden", "enthalten", "informationen", "bibliothek", "quelle", "quellen", "trouve", "trouver", "bibliotheque",
-]);
-// Everyday words that only say "not there" right next to the denial: "heb geen", "weet niet", "staat niet".
-const FINDING_NEARBY = new Set(["know", "tell", "have", "has", "access", "data", "weet", "weten", "vertellen", "zeggen", "heb", "hebben", "toegang", "staat", "staan", "terug", "weiss"]);
-const NEARBY = 6;
-const SAME_SENTENCE = 20;
-
-/**
- * Whether an answer says the library does not have it: a denial in the same sentence as a word about finding
- * (within twenty words), or within a few words of an everyday word such as "have" or "weet".
- */
-export function saysNotFound(answer) {
-  const whole = normalizeComparable(answer);
-  if (NOT_FOUND_PHRASES.some((phrase) => whole.includes(phrase))) return true;
-  for (const sentence of String(answer || "").split(/[.!?;\n]/)) {
-    const words = normalizeComparable(sentence).split(" ");
-    let denial = -Infinity;
-    let finding = -Infinity;
-    let nearby = -Infinity;
-    for (const [index, word] of words.entries()) {
-      // "can", "don" and the like only deny with the "t" of their contraction ("can't" becomes "can t").
-      if (DENIALS.has(word) && (!NEEDS_T.has(word) || words[index + 1] === "t")) denial = index;
-      if (FINDING.has(word)) finding = index;
-      if (FINDING_NEARBY.has(word)) nearby = index;
-      if (Math.abs(denial - finding) <= SAME_SENTENCE || Math.abs(denial - nearby) <= NEARBY) return true;
-    }
-  }
-  return false;
 }
 
 /** Whether an answer ends with a question to the user ("Is de buurvrouw iemand uit de wiki?"). */
@@ -132,10 +89,12 @@ async function askOne(chat, model, item, sessionKey) {
       }
       if (event.type === "tool" && event.name === "read_document") row.reads += 1;
       if (event.type === "message" && event.message.role === "assistant" && !event.message.tool_calls) row.answer = event.message.content;
+      // The answer before the check round (chat.check), to score the check itself.
+      if (event.type === "draft") row.firstAnswer = event.message.content;
       if (event.type === "turn") {
         // What the model read and what its searches showed: the saved answers then say why a source was pointed out.
         const brief = (items) => items.map((item) => ({ source: item.source, ...(item.path ? { path: item.path } : {}), ...(item.title ? { title: item.title } : {}) }));
-        Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, reasked: event.reasked || 0, rounds: event.rounds, documentsRead: brief(event.read), documentsSeen: brief(event.seen) });
+        Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, reasked: event.reasked || 0, checked: Boolean(event.checked), checkChanged: Boolean(event.checkChanged), rounds: event.rounds, documentsRead: brief(event.read), documentsSeen: brief(event.seen) });
       }
     }
   } catch (error) {
@@ -153,6 +112,7 @@ async function askOne(chat, model, item, sessionKey) {
     notFoundOk: item.expect === "not-found" ? (saysNotFound(row.answer) ? true : askedInstead(row.answer, item, 0) ? null : false) : null,
     empty: !row.answer.trim() || row.answer.startsWith("[The model"),
   });
+  if (row.checked) row.factsBeforeCheck = factsIn(row.firstAnswer || "", item.facts).length;
   return row;
 }
 
@@ -185,6 +145,10 @@ export function summarize(model, rows) {
     rescued: count((row) => row.rescued),
     thinkCut: count((row) => row.thinkCut),
     reasked: count((row) => row.reasked),
+    // The check round (chat.check): how often it ran, how often it changed the answer, and the facts without it.
+    checked: count((row) => row.checked),
+    checkChanged: count((row) => row.checkChanged),
+    factsBeforeCheck: share(rows.reduce((sum, row) => sum + (row.checked ? row.factsBeforeCheck : row.factsFound), 0), factsTotal),
     secondsAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.seconds, 0) / rows.length) * 10) / 10 : 0,
   };
 }
@@ -278,6 +242,7 @@ export function formatRow(row, index) {
     if (row.rescued) parts.push("second try");
     if (row.thinkCut) parts.push("thinking cut");
     if (row.reasked) parts.push("asked again");
+    if (row.checked) parts.push(`${row.checkChanged ? "check changed the answer" : "check kept the answer"}${row.factsTotal && row.factsBeforeCheck !== row.factsFound ? ` (facts before: ${row.factsBeforeCheck}/${row.factsTotal})` : ""}`);
   }
   return `${parts.join("  ")}  ${row.question.slice(0, 70)}`;
 }
@@ -289,6 +254,8 @@ const COLUMNS = [
   ["searches per question", "searchesAverage"], ["repeated searches", "repeatedSearches"], ["second tries", "rescued"], ["thinking cut", "thinkCut"],
   ["asked again", "reasked"], ["seconds", "secondsAverage"],
 ];
+// Shown when a check round ran (chat.check): the facts before it stand next to the facts after it.
+const CHECK_COLUMNS = [["checked", "checked"], ["check changed", "checkChanged"], ["facts before check", "factsBeforeCheck", true]];
 
 /**
  * The summary table, one line per model. A model that ran more than once gets the mean of its runs, with the
@@ -297,10 +264,12 @@ const COLUMNS = [
 export function formatSummary(results) {
   const models = perModel(results);
   const several = models.some(([, runs]) => runs.length > 1);
-  const header = ["model", ...(several ? ["runs"] : []), ...COLUMNS.map(([title]) => title)];
+  const columns = results.some((result) => result.summary.checked) ? [...COLUMNS, ...CHECK_COLUMNS] : COLUMNS;
+  const header = ["model", ...(several ? ["runs"] : []), ...columns.map(([title]) => title)];
   const rows = models.map(([model, runs]) => {
     const numbers = spread(runs.map((run) => run.summary));
-    const cells = COLUMNS.map(([, key, isPercent]) => {
+    const cells = columns.map(([, key, isPercent]) => {
+      if (!numbers[key] && numbers[key] !== null) return "-";
       const value = numbers[key];
       if (value === null) return "-";
       const unit = isPercent ? "%" : "";

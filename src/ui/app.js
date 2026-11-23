@@ -361,6 +361,8 @@ async function sendChat() {
   let bubble = addBubble("assistant");
   let call = null;
   let thinking = null;
+  // An answer that goes through the check round: shown dimmed until the final answer replaces it.
+  let draft = null;
   // A thinking model's reasoning is shown dimmed while it streams, and folded away once the answer starts.
   const think = (text) => {
     if (!thinking) {
@@ -390,8 +392,16 @@ async function sendChat() {
       else if (event.type === "token") { doneThinking(); setAnswer(bubble, (bubble.dataset.raw || "") + event.text); bubble.scrollIntoView({ block: "end" }); }
       else if (event.type === "tool") { doneThinking(); call = addCall(event.name, event.args); }
       else if (event.type === "toolResult") { if (call) call.querySelector("pre").textContent = event.text; call = null; }
+      else if (event.type === "draft") {
+        doneThinking();
+        draft = { bubble, message: event.message };
+        bubble.classList.add("draft");
+        bubble = addBubble("assistant");
+      }
       else if (event.type === "message") {
         chat.history.push(event.message);
+        // The final answer takes the place of the one that was checked.
+        if (draft && event.message.role === "assistant" && !event.message.tool_calls) { draft.bubble.remove(); draft = null; }
         // A turn that only calls tools has no text; its bubble goes, and a new one follows the tool result.
         if (event.message.role === "assistant" && !bubble.textContent) bubble.remove();
         if (event.message.role === "tool") bubble = addBubble("assistant");
@@ -419,6 +429,8 @@ async function sendChat() {
     if (chat.controller.signal.aborted) { if (!bubble.textContent) bubble.textContent = "[stopped]"; }
     else addBubble("error", error.message);
   } finally {
+    // Stopped or failed during the check: the answer that was being checked is the answer.
+    if (draft) { draft.bubble.classList.remove("draft"); chat.history.push(draft.message); if (!bubble.textContent || bubble.textContent === "[stopped]") bubble.remove(); }
     chat.busy = false;
     chat.controller = null;
     $("#chat-send").classList.remove("hidden");

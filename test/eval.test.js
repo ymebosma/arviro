@@ -79,7 +79,7 @@ test("the summary counts per model, and the lines say what went wrong", () => {
   ];
   rows[1].askedBack = true;
   const summary = summarize("m", rows);
-  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 100, rightSource: 100, read: 50, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, secondsAverage: 3 });
+  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 100, rightSource: 100, read: 50, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, checked: 0, checkChanged: 0, factsBeforeCheck: 67, secondsAverage: 3 });
   const table = formatSummary([{ model: "m", run: 1, rows, summary }]);
   assert.match(table, /^model +questions +answered +facts/);
   assert.match(table, /thinking cut +asked again +seconds$/m);
@@ -122,4 +122,22 @@ test("several runs of a model give the mean and the range per column, and a file
   } finally {
     fs.rmSync(folder, { recursive: true, force: true });
   }
+});
+
+test("the check round is scored: the facts before it next to the facts after it", () => {
+  const row = (extra) => ({ question: "a", model: "m", searched: ["library"], reads: 1, answer: "x", seconds: 2, factsFound: 2, factsTotal: 2, missing: [], rightSource: null, notFoundOk: null, empty: false, unverified: [], ...extra });
+  const rows = [row({ checked: true, checkChanged: true, factsBeforeCheck: 0 }), row({ checked: true, checkChanged: false, factsBeforeCheck: 2 }), row({ factsFound: 1 })];
+  const summary = summarize("m", rows);
+  assert.equal(summary.facts, 83);
+  assert.equal(summary.factsBeforeCheck, 50, "the unchecked answer counts as it is");
+  assert.equal(summary.checked, 2);
+  assert.equal(summary.checkChanged, 1);
+  const table = formatSummary([{ model: "m", run: 1, rows, summary }]).split("\n");
+  assert.match(table[0], /seconds +checked +check changed +facts before check$/);
+  assert.match(table[1], / 2 +1 +50%$/);
+  assert.match(formatRow(rows[0], 0), /check changed the answer \(facts before: 0\/2\)/);
+  assert.match(formatRow(rows[1], 1), /check kept the answer +a$/);
+  // Without a check round the table has no columns for it.
+  const plain = [row({})];
+  assert.doesNotMatch(formatSummary([{ model: "m", run: 1, rows: plain, summary: summarize("m", plain) }]), /checked/);
 });

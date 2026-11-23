@@ -3,14 +3,16 @@
 // MCP client, so what the model sees here is exactly what it sees in Open WebUI. What the chat adds
 // around the model is for small local models: a budget for thinking, a last round without tools, a
 // second try when a turn ends without an answer, one more try for a round that returns nothing or a
-// tool call Ollama could not read, and a check of the sources an answer names (citations.js).
+// tool call Ollama could not read, a check round in which the model compares its answer with the
+// question and what it found (chat.check), and a check of the sources an answer names (citations.js).
 import fs from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { saysNotFound } from "./answers.js";
 import { checkCitations, createLedger, ledgerFromHistory } from "./citations.js";
 import { createMcpServer } from "./mcp.js";
 import { isEmbeddingModel } from "./setup.js";
-import { UserInputError } from "./text.js";
+import { normalizeComparable, UserInputError } from "./text.js";
 
 const DEFAULT_PROMPT_FILE = new URL("../examples/system-prompt.en.md", import.meta.url);
 const MAX_MESSAGE_CHARS = 20_000;
@@ -18,6 +20,10 @@ const MAX_HISTORY = 60;
 const TOOL_PREVIEW_CHARS = 1200;
 const RESCUE_EXCERPTS = 4;
 const RESCUE_EXCERPT_CHARS = 2500;
+// The check round may look things up this many rounds more, then it has to answer.
+const CHECK_ROUNDS = 3;
+// A check that answers with a fraction of a full first answer ("Nothing needs to change.") did not write the answer again.
+const CHECK_FULL_ANSWER = 200;
 
 // Notes from Arviro to the model. They go with one request only and never into the conversation the page keeps.
 export const NOTES = Object.freeze({
@@ -25,6 +31,8 @@ export const NOTES = Object.freeze({
   thinkSearch: "(Note from Arviro, not the user: you have thought long enough. Search the library now if you need to, or answer.)",
   thinkAnswer: "(Note from Arviro, not the user: you have thought long enough. Answer now from what you found, briefly, and name your sources.)",
   rescue: "(Note from Arviro, not the user: you cannot look anything else up. Answer the question now from these library excerpts and name your sources.)",
+  // The wording that was measured on the owner's library (issue 13); change it only with a new measurement.
+  check: "(Note from Arviro, not the user: check your answer before it goes out. Compare it with the question and with the passages you found. Does it answer every part of the question, with the exact numbers, names or steps from the source? If a part is missing, vague or not in a passage you saw, look it up once more with search_library or read_document. Then write the complete final answer again, in the language of the question, with its source. If nothing needs to change, repeat your answer unchanged.)",
 });
 // A tool call written out as text instead of made: some models do this when they get no tools.
 const TOOL_MARKUP = ["<tool_call", "<function", "{\"name\": \"search_library", "{\"name\": \"read_document"];
@@ -130,7 +138,8 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
    * Yields events for the page: { type: "thinking", text }, { type: "token", text }, { type: "tool", name, args },
    * { type: "toolResult", name, text }, { type: "message", message } (an assistant or tool message to keep in the history),
    * { type: "note", text } (what Arviro did, for the reader), { type: "retry" } (what streamed so far is not the answer),
-   * and last { type: "turn", read, seen, unverified, looked, rescued, thinkCut, reasked, rounds }.
+   * { type: "draft", message } (the answer so far goes through the check round; the final message replaces it),
+   * and last { type: "turn", read, seen, unverified, looked, rescued, thinkCut, reasked, checked, checkChanged, rounds }.
    */
   async function* run({ messages, model, signal, sessionKey = "chat" }) {
     const arviro = getArviro();
@@ -142,7 +151,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
     if (!arviro.sources("all").length) throw new UserInputError("There are no sources yet; add some under Library.");
     const history = [{ role: "system", content: systemPrompt(config) }, ...cleanHistory(messages)];
     const ledger = ledgerFromHistory(history);
-    const facts = { looked: false, rescued: false, thinkCut: false, reasked: 0, rounds: 0 };
+    const facts = { looked: false, rescued: false, thinkCut: false, reasked: 0, checked: false, checkChanged: false, rounds: 0 };
     const tools = await connectTools(arviro, sessionKey);
 
     /** One request to Ollama, streamed. Returns { content, toolCalls, doneReason, cut } once the model is done. */
@@ -224,14 +233,19 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
 
     try {
       let note = null;
+      let limit = config.chat.maxRounds;
+      // The check round: the first answer, where it stands in the conversation, and whether the check looked anything up.
+      let check = null;
       for (let round = 0; ; round += 1) {
         facts.rounds = round + 1;
-        const last = round >= config.chat.maxRounds;
+        const last = round >= limit;
         const answerNow = note === NOTES.thinkAnswer;
         // The last round has no tools: a model that would go on looking things up has to answer.
         if (last && !note) note = NOTES.lastRound;
         const offerTools = !last && !answerNow;
-        const outgoing = note ? [...history, { role: "user", content: note }] : history;
+        // During the check the model sees its first answer and the request to check it; neither is kept in the conversation.
+        const base = check ? [...history.slice(0, check.at), { role: "assistant", content: check.first }, { role: "user", content: NOTES.check }, ...history.slice(check.at)] : history;
+        const outgoing = note ? [...base, { role: "user", content: note }] : base;
         const nudged = Boolean(note);
         note = null;
         let result;
@@ -239,6 +253,12 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
           try {
             result = yield* ask({ outgoing, offerTools, think: nudged ? false : config.chat.think, budget: nudged ? 0 : config.chat.thinkBudget });
           } catch (error) {
+            // The check is an extra: when it fails, the first answer stands.
+            if (check && !signal?.aborted && (attempt > 1 || !isUnreadableToolCall(error.message))) {
+              log(`chat: the check round failed: ${error.message}`);
+              result = { content: "", toolCalls: [], doneReason: null, cut: false };
+              break;
+            }
             // Ollama could not read the tool call the model wrote: ask this round once more instead of ending the turn.
             if (attempt > 1 || signal?.aborted || !isUnreadableToolCall(error.message)) throw error;
             log(`chat: ${error.message}; asking the round again`);
@@ -259,14 +279,25 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         if (result.cut) {
           facts.thinkCut = true;
           yield { type: "note", text: `Thinking was stopped after ${config.chat.thinkBudget} tokens (chat.thinkBudget); the model was asked to go on without it.` };
-          note = facts.looked ? NOTES.thinkAnswer : NOTES.thinkSearch;
+          note = (check ? check.looked : facts.looked) ? NOTES.thinkAnswer : NOTES.thinkSearch;
           continue;
         }
         // A lookup asked for in a round without tools is not run.
         const toolCalls = offerTools ? result.toolCalls : [];
         let { content, doneReason } = result;
 
-        if (!toolCalls.length) {
+        if (!toolCalls.length && check) {
+          // The answer of the check round is the answer, unless it is none: empty, cut off, or a remark instead of the answer written again.
+          const first = check.first.trim();
+          const usable = !isEmptyAnswer(content) && doneReason !== "length" && !(first.length >= CHECK_FULL_ANSWER && content.trim().length * 3 < first.length);
+          if (usable) facts.checkChanged = normalizeComparable(content) !== normalizeComparable(first);
+          else {
+            content = check.first;
+            yield { type: "retry" };
+            yield { type: "note", text: "The check gave no full answer; the first answer stands." };
+            yield { type: "token", text: content };
+          }
+        } else if (!toolCalls.length) {
           if (isEmptyAnswer(content) && facts.looked) {
             const second = yield* rescue();
             if (second) {
@@ -274,19 +305,35 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
               ({ content, doneReason } = second);
             }
           }
+          let complete = true;
           // The model ran out of room (chat.numPredict): say so, instead of ending the turn with silence.
           if (doneReason === "length") {
             const ending = content.trim()
               ? "\n\n[The answer was cut off at chat.numPredict tokens.]"
               : "[The model used up its room on thinking and gave no answer. Try again, or set chat.think to false.]";
             content += ending;
+            complete = false;
             yield { type: "token", text: ending };
           } else if (isEmptyAnswer(content)) {
             const ending = "[The model gave no answer. Try again, or try another model.]";
             content = ending;
+            complete = false;
             yield { type: "retry" };
             yield { type: "token", text: ending };
           }
+          // The check round (chat.check): the model compares its answer with the question and what it found, and may
+          // look things up once more. Always after an answer that says something was not found; in the mode "always"
+          // after every answer the model looked something up for (a greeting has nothing to check against).
+          if (complete && config.chat.check !== "off" && (saysNotFound(content) || (config.chat.check === "always" && facts.looked))) {
+            check = { at: history.length, first: content, looked: false };
+            facts.checked = true;
+            limit = round + CHECK_ROUNDS + 1;
+            yield { type: "draft", message: { role: "assistant", content } };
+            yield { type: "note", text: "The model was asked to check its answer against the question and what it found (chat.check)." };
+            continue;
+          }
+        }
+        if (!toolCalls.length) {
           const unverified = checkCitations(content, ledger, { sources: arviro.sources("all") });
           if (unverified.length) {
             const warning = `\n\n[Arviro did not find ${unverified.map((item) => `"${item}"`).join(", ")} among the documents searched or read in this conversation; check it before relying on it.]`;
@@ -304,6 +351,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         history.push(assistant);
         yield { type: "message", message: assistant };
         facts.looked = true;
+        if (check) check.looked = true;
         for (const call of toolCalls) {
           const { name, arguments: args } = call.function;
           yield { type: "tool", name, args };
