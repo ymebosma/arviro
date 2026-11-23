@@ -412,8 +412,9 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     maxRounds: Number(chatInput.maxRounds ?? 6),
     // A check round on the answer: "off", "not-found" (only after an answer that says something was not found) or "always".
     check: String(chatInput.check ?? "not-found"),
-    // Thinking in the check round: on or off (unset: as chat.think) and its budget (unset: chat.thinkBudget).
-    checkThink: chatInput.checkThink == null ? null : Boolean(chatInput.checkThink),
+    // Whether the check round may think as the chat does (chat.think). Off by default: without thinking the check
+    // kept its gain in the measurement and cost almost no time. Its budget, when it thinks (unset: chat.thinkBudget).
+    checkThink: Boolean(chatInput.checkThink ?? false),
     checkThinkBudget: chatInput.checkThinkBudget == null ? null : Number(chatInput.checkThinkBudget),
   };
   if (!Number.isInteger(chat.numCtx) || chat.numCtx < 1024) throw new ConfigError("chat.numCtx must be a whole number of at least 1024.");

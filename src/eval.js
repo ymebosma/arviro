@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { saysNotFound } from "./answers.js";
-import { createChat } from "./chat.js";
+import { createChat, unloadModel } from "./chat.js";
 import { ConfigError } from "./config.js";
 import { normalizeComparable } from "./text.js";
 
@@ -162,13 +162,19 @@ export const MAX_RUNS = 20;
  * Ask every question to every model, one after the other, `runs` times per model. Each question is its own
  * conversation and its own guard session, so one question's calls do not count against the next.
  * A model does not answer the same way twice; several runs show how far its numbers move by themselves.
+ * Between runs the model that just ran is unloaded.
  * @returns {Promise<{ model: string, run: number, rows: object[], summary: object }[]>} one entry per model and run
  */
 export async function runEval({ getArviro, guard, version, models, questions, runs = 1, log = () => {}, fetchImpl = fetch, onRow = () => {} }) {
   const chat = createChat({ getArviro, guard, version, log, fetchImpl });
+  const { config } = getArviro();
+  const url = config.chat.url || config.embedding.url;
   const results = [];
   for (const model of models) {
     for (let run = 1; run <= runs; run += 1) {
+      // Each run starts from a freshly loaded model: Ollama slows down when it serves one conversation after
+      // another for a long time, and then the seconds of a later run say nothing about the model.
+      if (results.length && url) await unloadModel(url, results.at(-1).model, fetchImpl);
       const rows = [];
       for (const [index, item] of questions.entries()) {
         const row = await askOne(chat, model, item, `eval:${model}:${run}:${index}:${Date.now()}`);

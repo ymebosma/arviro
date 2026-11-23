@@ -92,7 +92,19 @@ export { checkCitations, createLedger };
 export function isUnreadableToolCall(message) {
   const text = String(message || "").toLowerCase();
   return text.includes("expected element type") || text.includes("parsing tool call") || text.includes("error parsing tool")
+    || text.includes("xml syntax error") || text.includes("closed by </")
     || text.includes("unexpected end of json") || text.includes("invalid character") || text.includes("unexpected eof");
+}
+
+/**
+ * Ask Ollama to unload a model (keep_alive 0), so that the next request starts from a fresh load.
+ * Nothing depends on it: a failure is ignored.
+ */
+export async function unloadModel(url, model, fetchImpl = fetch) {
+  try {
+    const response = await fetchImpl(`${url}/api/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model, keep_alive: 0 }), signal: AbortSignal.timeout(30_000) });
+    await response.arrayBuffer();
+  } catch {}
 }
 
 /** Whether a final message holds no answer: nothing, or a tool call written out as text. */
@@ -253,7 +265,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         note = null;
         // The check round has its own settings for thinking: it thinks to the budget more often than a first answer.
         const thinking = check
-          ? { think: config.chat.checkThink ?? config.chat.think, budget: config.chat.checkThinkBudget, setting: "chat.checkThinkBudget" }
+          ? { think: config.chat.checkThink ? config.chat.think : false, budget: config.chat.checkThinkBudget, setting: "chat.checkThinkBudget" }
           : { think: config.chat.think, budget: config.chat.thinkBudget, setting: "chat.thinkBudget" };
         let result;
         for (let attempt = 1; ; attempt += 1) {
@@ -296,7 +308,9 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         if (!toolCalls.length && check) {
           // The answer of the check round is the answer, unless it is none: empty, cut off, or a remark instead of the answer written again.
           const first = check.first.trim();
-          const usable = !isEmptyAnswer(content) && doneReason !== "length" && !(first.length >= CHECK_FULL_ANSWER && content.trim().length * 3 < first.length);
+          // A remark is far shorter than the full first answer; a short answer after a long "not found" is the correction.
+          const remark = first.length >= CHECK_FULL_ANSWER && content.trim().length * 3 < first.length && !(saysNotFound(first) && !saysNotFound(content));
+          const usable = !isEmptyAnswer(content) && doneReason !== "length" && !remark;
           if (usable) facts.checkChanged = normalizeComparable(content) !== normalizeComparable(first);
           else {
             facts.checkSetAside = true;

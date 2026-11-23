@@ -191,9 +191,9 @@ function contentWords(text) {
   return new Set(normalizeComparable(text).split(" ").filter((word) => word && !STOPWORDS.has(word) && !POINTER_WORDS.has(word) && !GENERIC_WORDS.has(word)).flatMap(nameParts));
 }
 
-/** The parts of a text between quotation marks ("Gouda", “Making bread”, 'Water'). One pass, so linear. */
+/** The parts of a text between quotation marks or emphasis ("Gouda", “Making bread”, 'Water', *Bread*). One pass, so linear. */
 function quotedParts(text) {
-  const closers = { "\"": "\"", "“": "”", "„": "”", "'": "'", "‘": "’", "«": "»" };
+  const closers = { "\"": "\"", "“": "”", "„": "”", "'": "'", "‘": "’", "«": "»", "*": "*" };
   const parts = [];
   let open = null;
   let start = 0;
@@ -357,8 +357,8 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     const numbers = pointerNumbers(item);
     const pageNumbers = new Set(numbers.map((pointer) => pointer.number));
     const named = heads(item).some((candidate) => titleNamed(candidate, pageNumbers) || printedTitle(candidate))
-      // A title in quotation marks, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
-      || quotedParts(item).map((part) => contentWords(part)).some((quoted) => quoted.size && knownNames.some((names) => names.size === quoted.size && [...quoted].every((word) => names.has(word))))
+      // A title in quotation marks or in italics, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
+      || quotedParts(item.replaceAll("**", "*")).map((part) => contentWords(part)).some((quoted) => quoted.size && knownNames.some((names) => names.size === quoted.size && [...quoted].every((word) => names.has(word))))
       // A page or line of a document that was read, written as an item of its own.
       || (ledger.read.size > 0 && isPointer(item))
       // Pages or lines that a read did show: the document, under another name (a translated title).
