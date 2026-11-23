@@ -94,7 +94,9 @@ async function askOne(chat, model, item, sessionKey) {
       if (event.type === "turn") {
         // What the model read and what its searches showed: the saved answers then say why a source was pointed out.
         const brief = (items) => items.map((item) => ({ source: item.source, ...(item.path ? { path: item.path } : {}), ...(item.title ? { title: item.title } : {}) }));
-        Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, reasked: event.reasked || 0, checked: Boolean(event.checked), checkChanged: Boolean(event.checkChanged), rounds: event.rounds, documentsRead: brief(event.read), documentsSeen: brief(event.seen) });
+        Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, reasked: event.reasked || 0, checked: Boolean(event.checked), checkChanged: Boolean(event.checkChanged), rounds: event.rounds,
+          // A check answer that was set aside (empty, cut off, or far shorter than the first answer), to judge that rule by.
+          ...(event.checkSetAside ? { checkSetAside: true, checkAnswer: String(event.checkAnswer || "") } : {}), documentsRead: brief(event.read), documentsSeen: brief(event.seen) });
       }
     }
   } catch (error) {
@@ -148,6 +150,7 @@ export function summarize(model, rows) {
     // The check round (chat.check): how often it ran, how often it changed the answer, and the facts without it.
     checked: count((row) => row.checked),
     checkChanged: count((row) => row.checkChanged),
+    checkSetAside: count((row) => row.checkSetAside),
     factsBeforeCheck: share(rows.reduce((sum, row) => sum + (row.checked ? row.factsBeforeCheck : row.factsFound), 0), factsTotal),
     secondsAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.seconds, 0) / rows.length) * 10) / 10 : 0,
   };
@@ -242,7 +245,7 @@ export function formatRow(row, index) {
     if (row.rescued) parts.push("second try");
     if (row.thinkCut) parts.push("thinking cut");
     if (row.reasked) parts.push("asked again");
-    if (row.checked) parts.push(`${row.checkChanged ? "check changed the answer" : "check kept the answer"}${row.factsTotal && row.factsBeforeCheck !== row.factsFound ? ` (facts before: ${row.factsBeforeCheck}/${row.factsTotal})` : ""}`);
+    if (row.checked) parts.push(`${row.checkChanged ? "check changed the answer" : row.checkSetAside ? "check answer set aside" : "check kept the answer"}${row.factsTotal && row.factsBeforeCheck !== row.factsFound ? ` (facts before: ${row.factsBeforeCheck}/${row.factsTotal})` : ""}`);
   }
   return `${parts.join("  ")}  ${row.question.slice(0, 70)}`;
 }
@@ -255,7 +258,7 @@ const COLUMNS = [
   ["asked again", "reasked"], ["seconds", "secondsAverage"],
 ];
 // Shown when a check round ran (chat.check): the facts before it stand next to the facts after it.
-const CHECK_COLUMNS = [["checked", "checked"], ["check changed", "checkChanged"], ["facts before check", "factsBeforeCheck", true]];
+const CHECK_COLUMNS = [["checked", "checked"], ["check changed", "checkChanged"], ["check set aside", "checkSetAside"], ["facts before check", "factsBeforeCheck", true]];
 
 /**
  * The summary table, one line per model. A model that ran more than once gets the mean of its runs, with the

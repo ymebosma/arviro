@@ -79,7 +79,7 @@ test("the summary counts per model, and the lines say what went wrong", () => {
   ];
   rows[1].askedBack = true;
   const summary = summarize("m", rows);
-  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 100, rightSource: 100, read: 50, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, checked: 0, checkChanged: 0, factsBeforeCheck: 67, secondsAverage: 3 });
+  assert.deepEqual(summary, { model: "m", questions: 3, errors: 0, answered: 2, facts: 67, searched: 100, rightSource: 100, read: 50, notFound: 100, madeUpSources: 1, repeatedSearches: 1, searchesAverage: 2, askedBack: 1, rescued: 1, thinkCut: 1, reasked: 1, checked: 0, checkChanged: 0, checkSetAside: 0, factsBeforeCheck: 67, secondsAverage: 3 });
   const table = formatSummary([{ model: "m", run: 1, rows, summary }]);
   assert.match(table, /^model +questions +answered +facts/);
   assert.match(table, /thinking cut +asked again +seconds$/m);
@@ -133,8 +133,10 @@ test("the check round is scored: the facts before it next to the facts after it"
   assert.equal(summary.checked, 2);
   assert.equal(summary.checkChanged, 1);
   const table = formatSummary([{ model: "m", run: 1, rows, summary }]).split("\n");
-  assert.match(table[0], /seconds +checked +check changed +facts before check$/);
-  assert.match(table[1], / 2 +1 +50%$/);
+  assert.match(table[0], /seconds +checked +check changed +check set aside +facts before check$/);
+  assert.match(table[1], / 2 +1 +0 +50%$/);
+  assert.match(formatRow({ ...rows[1], checkSetAside: true }, 1), /check answer set aside +a$/);
+  assert.equal(summarize("m", [{ ...rows[1], checkSetAside: true }]).checkSetAside, 1);
   assert.match(formatRow(rows[0], 0), /check changed the answer \(facts before: 0\/2\)/);
   assert.match(formatRow(rows[1], 1), /check kept the answer +a$/);
   // Without a check round the table has no columns for it.

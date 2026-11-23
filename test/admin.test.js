@@ -95,6 +95,12 @@ function startFakeOllama() {
             return finish();
           }
           if (request.model === "checker-silent") return finish();
+          // "checker-thinker" thinks on and on in the check while it may think.
+          if (request.model === "checker-thinker" && request.think !== false) {
+            for (let index = 0; index < 50; index += 1) line({ role: "assistant", content: "", thinking: "hmm " });
+            return finish();
+          }
+          if (request.model === "checker-thinker") { line({ role: "assistant", content: first }); return finish(); }
           if (request.model === "checker-remark") { line({ role: "assistant", content: "Nothing needs to change." }); return finish(); }
           if (request.model === "checker-right") { line({ role: "assistant", content: first }); return finish(); }
           if (last.role !== "tool") return search("cooling a burn");
@@ -745,12 +751,16 @@ test("the check round: the model compares its answer with what it found, and the
     assert.equal(ollama.chats.length, 3);
     assert.equal(turnOf(right.events).checked, true);
     assert.equal(turnOf(right.events).checkChanged, false);
+    assert.equal(turnOf(right.events).checkSetAside, false);
+    assert.equal(ollama.chats[2].think, undefined, "the check thinks as the chat does, unless chat.checkThink says otherwise");
     assert.match(answerOf(right.events), /^Cool a burn under running water for ten minutes\./);
     // No answer from the check, or a remark instead of the answer: the first answer stands, and is written again.
     for (const model of ["checker-silent", "checker-remark"]) {
       const kept = await ask(always.url, model);
       assert.match(answerOf(kept.events), /^Cool a burn under running water for ten minutes\./, model);
       assert.equal(turnOf(kept.events).checkChanged, false, model);
+      assert.equal(turnOf(kept.events).checkSetAside, true, model);
+      assert.equal(turnOf(kept.events).checkAnswer, model === "checker-remark" ? "Nothing needs to change." : "", model);
       assert.ok(kept.events.some((event) => event.type === "note" && /the first answer stands/.test(event.text)), model);
       const after = kept.events.slice(kept.events.findLastIndex((event) => event.type === "retry"));
       assert.match(after.filter((event) => event.type === "token").map((event) => event.text).join(""), /^Cool a burn under running water/, model);
@@ -761,6 +771,30 @@ test("the check round: the model compares its answer with what it found, and the
     assert.equal(turnOf(greeting.events).checked, false);
   } finally {
     await always.close();
+  }
+  // The check round without thinking, while the first answer thinks as the model likes.
+  const quiet = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThink: false } });
+  try {
+    ollama.chats.length = 0;
+    await ask(quiet.url, "checker-right");
+    assert.deepEqual(ollama.chats.map((request) => request.think), [undefined, undefined, false]);
+  } finally {
+    await quiet.close();
+  }
+  // The check round with a thinking budget of its own, smaller than the chat's.
+  const brief = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThinkBudget: 10 } });
+  try {
+    ollama.chats.length = 0;
+    const thinker = await ask(brief.url, "checker-thinker");
+    assert.ok(thinker.events.some((event) => event.type === "note" && /stopped after 10 tokens \(chat\.checkThinkBudget\)/.test(event.text)));
+    assert.equal(ollama.chats.length, 4);
+    assert.equal(ollama.chats[3].think, false);
+    assert.match(ollama.chats[3].messages.at(-1).content, /you have thought long enough/);
+    assert.match(answerOf(thinker.events), /^Cool a burn under running water for ten minutes\./);
+    assert.equal(turnOf(thinker.events).checkChanged, false);
+    assert.equal(turnOf(thinker.events).thinkCut, true);
+  } finally {
+    await brief.close();
   }
   const off = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "off" } });
   try {
@@ -826,8 +860,8 @@ test("arviro eval asks each model the questions through the chat and measures th
   });
   assert.equal(checkedRun.code, 0, checkedRun.stderr);
   assert.match(checkedRun.stdout, /\n +1\. .*facts 1\/2 \(missing: based on the library\) +check changed the answer \(facts before: 0\/2\)/);
-  assert.match(checkedRun.stdout, /seconds +checked +check changed +facts before check\n/);
-  assert.match(checkedRun.stdout, /\nchecker +2 +2 +50% .* 2 +2 +0%\n/);
+  assert.match(checkedRun.stdout, /seconds +checked +check changed +check set aside +facts before check\n/);
+  assert.match(checkedRun.stdout, /\nchecker +2 +2 +50% .* 2 +2 +0 +0%\n/);
   const checkedLines = fs.readFileSync(path.join(fixture.root, "eval-check", fs.readdirSync(path.join(fixture.root, "eval-check"))[0]), "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(checkedLines[1].firstAnswer, "I could not find that in the library.");
   assert.equal(checkedLines[1].answer, "Cool a burn for ten minutes. Source: manuals/first-aid.md");

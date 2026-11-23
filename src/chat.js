@@ -139,7 +139,8 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
    * { type: "toolResult", name, text }, { type: "message", message } (an assistant or tool message to keep in the history),
    * { type: "note", text } (what Arviro did, for the reader), { type: "retry" } (what streamed so far is not the answer),
    * { type: "draft", message } (the answer so far goes through the check round; the final message replaces it),
-   * and last { type: "turn", read, seen, unverified, looked, rescued, thinkCut, reasked, checked, checkChanged, rounds }.
+   * and last { type: "turn", read, seen, unverified, looked, rescued, thinkCut, reasked, checked, checkChanged, checkSetAside, rounds }
+   * (and checkAnswer, what the check wrote, when it was set aside).
    */
   async function* run({ messages, model, signal, sessionKey = "chat" }) {
     const arviro = getArviro();
@@ -151,7 +152,9 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
     if (!arviro.sources("all").length) throw new UserInputError("There are no sources yet; add some under Library.");
     const history = [{ role: "system", content: systemPrompt(config) }, ...cleanHistory(messages)];
     const ledger = ledgerFromHistory(history);
-    const facts = { looked: false, rescued: false, thinkCut: false, reasked: 0, checked: false, checkChanged: false, rounds: 0 };
+    const facts = { looked: false, rescued: false, thinkCut: false, reasked: 0, checked: false, checkChanged: false, checkSetAside: false, rounds: 0 };
+    // What the check round wrote when it was set aside, for `arviro eval`.
+    let setAside = null;
     const tools = await connectTools(arviro, sessionKey);
 
     /** One request to Ollama, streamed. Returns { content, toolCalls, doneReason, cut } once the model is done. */
@@ -248,10 +251,14 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         const outgoing = note ? [...base, { role: "user", content: note }] : base;
         const nudged = Boolean(note);
         note = null;
+        // The check round has its own settings for thinking: it thinks to the budget more often than a first answer.
+        const thinking = check
+          ? { think: config.chat.checkThink ?? config.chat.think, budget: config.chat.checkThinkBudget, setting: "chat.checkThinkBudget" }
+          : { think: config.chat.think, budget: config.chat.thinkBudget, setting: "chat.thinkBudget" };
         let result;
         for (let attempt = 1; ; attempt += 1) {
           try {
-            result = yield* ask({ outgoing, offerTools, think: nudged ? false : config.chat.think, budget: nudged ? 0 : config.chat.thinkBudget });
+            result = yield* ask({ outgoing, offerTools, think: nudged ? false : thinking.think, budget: nudged ? 0 : thinking.budget });
           } catch (error) {
             // The check is an extra: when it fails, the first answer stands.
             if (check && !signal?.aborted && (attempt > 1 || !isUnreadableToolCall(error.message))) {
@@ -278,7 +285,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         }
         if (result.cut) {
           facts.thinkCut = true;
-          yield { type: "note", text: `Thinking was stopped after ${config.chat.thinkBudget} tokens (chat.thinkBudget); the model was asked to go on without it.` };
+          yield { type: "note", text: `Thinking was stopped after ${thinking.budget} tokens (${thinking.setting}); the model was asked to go on without it.` };
           note = (check ? check.looked : facts.looked) ? NOTES.thinkAnswer : NOTES.thinkSearch;
           continue;
         }
@@ -292,6 +299,8 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
           const usable = !isEmptyAnswer(content) && doneReason !== "length" && !(first.length >= CHECK_FULL_ANSWER && content.trim().length * 3 < first.length);
           if (usable) facts.checkChanged = normalizeComparable(content) !== normalizeComparable(first);
           else {
+            facts.checkSetAside = true;
+            setAside = content;
             content = check.first;
             yield { type: "retry" };
             yield { type: "note", text: "The check gave no full answer; the first answer stands." };
@@ -343,7 +352,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
           const assistant = { role: "assistant", content };
           history.push(assistant);
           yield { type: "message", message: assistant };
-          yield { type: "turn", read: [...ledger.read.values()], seen: ledger.onlySeen(), unverified, ...facts };
+          yield { type: "turn", read: [...ledger.read.values()], seen: ledger.onlySeen(), unverified, ...facts, ...(facts.checkSetAside ? { checkAnswer: setAside } : {}) };
           return;
         }
 

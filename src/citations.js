@@ -9,9 +9,10 @@ const TOOL_SEARCH = "search_library";
 const TOOL_READ = "read_document";
 // A sources item longer than this is a sentence about the sources, not a source.
 const PROSE_WORDS = 25;
-// The beginning of a read holds the title the document prints, which can differ from its file name.
-const OPENING_CHARS = 1200;
-const MAX_OPENING_PHRASES = 20_000;
+// What a read or a search result showed holds the title the document prints (on its first page, in a page
+// header), which can differ from its file name. This much text per result is kept, as rows of three words.
+const SHOWN_CHARS = 30_000;
+const MAX_SHOWN_PHRASES = 200_000;
 
 /** `text` without the characters of `set` at its start and its end; plain loops, so linear on any input. */
 function strip(text, set, { start = true, end = true } = {}) {
@@ -38,6 +39,10 @@ export function createLedger() {
   // Per document read: the page numbers and line ranges the reads showed, to check "page 78-79" against.
   const shown = new Map();
   const key = (item) => `${item.source}\u0000${normalPath(item.path)}`;
+  const showed = (text) => {
+    const row = normalizeComparable(String(text).slice(0, SHOWN_CHARS)).split(" ");
+    for (let at = 0; at + 2 < row.length && ledger.phrases.size < MAX_SHOWN_PHRASES; at += 1) ledger.phrases.add(`${row[at]} ${row[at + 1]} ${row[at + 2]}`);
+  };
   const ledger = {
     read,
     seen,
@@ -45,8 +50,8 @@ export function createLedger() {
     sources: new Set(),
     // Sources whose results are places on a map: they have no documents to cite.
     mapSources: new Set(),
-    // Every three words in a row at the beginning of a read, where a document prints its own title.
-    openings: new Set(),
+    // Every three words in a row of what reads and search results showed, where a document prints its own title.
+    phrases: new Set(),
     /** Record one tool call and its result text. */
     record(name, args = {}, text = "") {
       if (args.source) ledger.sources.add(String(args.source));
@@ -56,8 +61,7 @@ export function createLedger() {
         if (!read.has(key(item))) read.set(key(item), item);
         if (!shown.has(key(item))) shown.set(key(item), { pages: new Set(), ranges: [] });
         const positions = shown.get(key(item));
-        const opening = normalizeComparable(String(text).slice(0, OPENING_CHARS)).split(" ");
-        for (let at = 0; at + 2 < opening.length && ledger.openings.size < MAX_OPENING_PHRASES; at += 1) ledger.openings.add(`${opening[at]} ${opening[at + 1]} ${opening[at + 2]}`);
+        showed(text);
         for (const line of String(text).split("\n", 400)) {
           if (line.startsWith("page ")) {
             const page = Number(line.slice(5));
@@ -72,6 +76,7 @@ export function createLedger() {
         let parsed = null;
         try { parsed = JSON.parse(text); } catch {}
         for (const result of parsed?.results || []) {
+          showed(result?.excerpt || result?.snippet || "");
           const where = result?.read;
           if (where?.source && where?.path) {
             const item = { source: String(where.source), path: String(where.path), title: result.title ? String(result.title) : null };
@@ -154,6 +159,7 @@ const GENERIC_WORDS = new Set([
   "nederlandstalig", "nederlandstalige", "nederlands", "nederlandse", "dutch", "engelstalig", "engelstalige", "engels", "engelse", "english",
   "duits", "duitse", "duitstalig", "german", "deutsch", "deutsche", "frans", "franse", "french", "francais", "francaise",
   "offline", "lokaal", "lokale", "local", "category", "categorie", "region", "regio", "kiwix",
+  "library", "bibliotheek", "bibliothek", "bibliotheque",
 ]);
 
 /**
@@ -307,7 +313,8 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
   for (const raw of text.split(PIECE_SPLIT)) {
     const piece = trimPiece(raw);
     if (!piece.includes("/") || /^[a-z][a-z0-9+.-]*:\/\//i.test(piece)) continue;
-    const looksLikeDocument = /\.[a-z0-9]{1,5}$/i.test(piece) || piece.startsWith("/kiwix/") || piece.startsWith("kiwix/");
+    // An extension begins with a letter (".pdf", ".md"; ".7z" and ".3gp" are the exceptions): "3G/3.75G" is not a file.
+    const looksLikeDocument = /\.(?:[a-z][a-z0-9]{0,4}|7z|3gp)$/i.test(piece) || piece.startsWith("/kiwix/") || piece.startsWith("kiwix/");
     if (!looksLikeDocument) continue;
     const withoutSource = [...sourceIds].some((id) => piece.toLowerCase().startsWith(`${id}/`)) ? piece.slice(piece.indexOf("/") + 1) : piece;
     if (!knownPath(piece) && !knownPath(withoutSource)) flag(piece);
@@ -330,11 +337,11 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     return titles.some((title) => lower === title || (lower.includes(title) && contentWords(title).size > 2) || (title.includes(lower) && contentWords(lower).size >= 2))
       || namesByWords(contentWords(candidate), knownNames, sourceWords, pageNumbers);
   };
-  // The title a document prints at its beginning, which a read showed: three words of content or more, word for word.
+  // The title a document prints, which a read or a search result showed: three words of content or more, word for word.
   const printedTitle = (candidate) => {
     const row = normalizeComparable(candidate).split(" ");
     if (row.length < 3 || contentWords(candidate).size < 3) return false;
-    for (let at = 0; at + 2 < row.length; at += 1) if (!ledger.openings.has(`${row[at]} ${row[at + 1]} ${row[at + 2]}`)) return false;
+    for (let at = 0; at + 2 < row.length; at += 1) if (!ledger.phrases.has(`${row[at]} ${row[at + 1]} ${row[at + 2]}`)) return false;
     return true;
   };
   for (const item of items.map((value) => strip(strip(value, "*_ \t(", { end: false }), "*_. \t", { start: false })).filter(Boolean)) {
@@ -359,7 +366,9 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
       // A map source: there is no document, the model says what it searched for.
       || words.some((word) => mapWords.has(word))
       // Only the source itself, by its id or its description: "Dutch Wikipedia", "library (offline)".
-      || ([...itemWords].some((word) => sourceWords.has(word)) && [...itemWords].every((word) => sourceWords.has(word) || /^\d+$/.test(word)));
+      || (words.some((word) => sourceWords.has(word)) && [...itemWords].every((word) => sourceWords.has(word) || /^\d+$/.test(word)))
+      // Nothing that names anything: "the offline library", "local documents".
+      || !itemWords.size;
     if (!named) flag(item);
   }
   return unverified;
