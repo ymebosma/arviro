@@ -7,7 +7,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createArviro } from "../src/arviro.js";
 import { ConfigError, loadConfig, userBinDir } from "../src/config.js";
 import { createEmbedder } from "../src/embeddings.js";
-import { formatRow, formatSummary, loadEvalQuestions, runEval, saveEval } from "../src/eval.js";
+import { formatRow, formatSummary, loadEvalQuestions, MAX_RUNS, runEval, saveEval } from "../src/eval.js";
 import { createGuard } from "../src/guard.js";
 import { startHttpServer } from "../src/http.js";
 import { buildIndex } from "../src/indexer.js";
@@ -35,7 +35,7 @@ Usage: arviro <command> [options]
   service install            start Arviro at login and keep it running; run the library update weekly   [--no-open]
   service uninstall          undo that
   service status             show whether the service is installed
-  eval <questions.json>      ask a list of questions to chat models and measure the answers  [--model a,b] [--save <folder>]
+  eval <questions.json>      ask a list of questions to chat models and measure the answers  [--model a,b] [--runs <n>] [--save <folder>]
   library status             show the ZIM files and map extracts in the library and how old they are
   library check [name...]    ask the download servers whether newer editions exist
   library update [name...]   download new or newer editions, check their checksums and update the index
@@ -204,13 +204,16 @@ async function service(config, rest, options) {
 /**
  * `arviro eval <questions.json>`: the questions go to each model through the Chat tab's code; one line per question,
  * a table per model at the end, and every answer in a JSON-lines file under dataDir/evals (or --save).
+ * With --runs the questions go to each model several times, and the table shows the mean and the range.
  */
 async function evaluate(config, rest, options) {
   const [file] = rest;
-  if (!file) throw new UserInputError("Usage: arviro eval <questions.json> [--model a,b] [--save <folder>]. examples/eval.example.json shows the format.");
+  if (!file) throw new UserInputError("Usage: arviro eval <questions.json> [--model a,b] [--runs <n>] [--save <folder>]. examples/eval.example.json shows the format.");
   const questions = loadEvalQuestions(file);
   const models = String(options.model || config.chat.model || "").split(",").map((name) => name.trim()).filter(Boolean);
   if (!models.length) throw new UserInputError("Name the model(s) to ask: --model qwen3:8b,granite4.2:8b (or set chat.model).");
+  const runs = options.runs === undefined ? 1 : Number(options.runs);
+  if (!Number.isInteger(runs) || runs < 1 || runs > MAX_RUNS) throw new UserInputError(`--runs is a whole number from 1 to ${MAX_RUNS}.`);
   const arviro = createArviro(config, { log });
   try {
     const results = await runEval({
@@ -219,9 +222,10 @@ async function evaluate(config, rest, options) {
       version: VERSION,
       models,
       questions,
+      runs,
       log,
-      onRow: (row, index) => {
-        if (index === 0) print(`\n${row.model}`);
+      onRow: (row, index, run) => {
+        if (index === 0) print(`\n${row.model}${runs > 1 ? ` (run ${run} of ${runs})` : ""}`);
         print(formatRow(row, index));
       },
     });

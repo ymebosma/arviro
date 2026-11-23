@@ -109,9 +109,20 @@ test("the example configuration in the repository is valid", () => {
   assert.equal(config.sources.maps, undefined);
   assert.deepEqual(config.library.downloads, []);
   assert.equal(config.chat.assistantName, "the assistant");
+  assert.equal(config.chat.check, "not-found", "the check round runs after a \"not found\" answer unless the owner chooses otherwise");
 });
 
 test("invalid configurations are rejected with a clear message", () => {
+  assert.throws(() => normalizeConfig({ sources: { library: { path: "x" } }, chat: { check: "sometimes" } }), /chat\.check must be "off", "not-found" or "always"/);
+  assert.equal(normalizeConfig({ sources: { library: { path: "x" } }, chat: { check: "always" } }).chat.check, "always");
+  // Thinking in the check round follows the chat's settings unless it gets its own.
+  const plain = normalizeConfig({ sources: { library: { path: "x" } }, chat: { thinkBudget: 1500 } }).chat;
+  assert.equal(plain.checkThink, null);
+  assert.equal(plain.checkThinkBudget, 1500);
+  const own = normalizeConfig({ sources: { library: { path: "x" } }, chat: { checkThink: false, checkThinkBudget: 800 } }).chat;
+  assert.equal(own.checkThink, false);
+  assert.equal(own.checkThinkBudget, 800);
+  assert.throws(() => normalizeConfig({ sources: { library: { path: "x" } }, chat: { checkThinkBudget: -1 } }), /chat\.checkThinkBudget/);
   assert.throws(() => normalizeConfig({ sources: { "Bad Id": { path: "x" } } }), ConfigError);
   assert.throws(() => normalizeConfig({ sources: { maps: { path: "x" } } }), /reserved/);
   assert.throws(() => normalizeConfig({ sources: { docs: {} } }), /path is required/);

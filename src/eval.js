@@ -4,18 +4,14 @@
 // The questions are the owner's, about the owner's library; examples/eval.example.json shows the format.
 import fs from "node:fs";
 import path from "node:path";
+import { saysNotFound } from "./answers.js";
 import { createChat } from "./chat.js";
 import { ConfigError } from "./config.js";
 import { normalizeComparable } from "./text.js";
 
-const MAX_QUESTIONS = 500;
-// Words an answer uses to say the library does not have something (English, Dutch, German, French).
-const NOT_FOUND_PHRASES = [
-  "not in the", "not found", "could not find", "couldn t find", "cannot find", "can t find", "no information", "does not contain", "doesn t contain", "not mentioned",
-  "niet in de", "niet gevonden", "kon niet vinden", "kan niet vinden", "geen informatie", "staat niet", "niet te vinden", "kon ik niet", "kan ik niet",
-  "nicht gefunden", "keine information", "nicht enthalten", "pas trouve", "aucune information",
-];
+export { saysNotFound };
 
+const MAX_QUESTIONS = 500;
 /**
  * The questions of an eval file: { questions: [...] } or a plain list. Each question is
  * { question, source?: id or [ids], facts?: [[alternatives], ...], expect?: "answer" | "not-found" }.
@@ -45,34 +41,6 @@ export function loadEvalQuestions(file) {
 export function factsIn(answer, facts) {
   const text = normalizeComparable(answer);
   return facts.filter((fact) => fact.some((wording) => text.includes(normalizeComparable(wording))));
-}
-
-// Words that deny, and words about finding or having information. A denial near such a word says "it is not there"
-// in more ways than a list of phrases can hold: "Ik kan dit telefoonnummer niet vinden in de lokale bibliotheek".
-const DENIALS = new Set(["not", "no", "cannot", "unable", "don", "doesn", "isn", "couldn", "can", "niet", "geen", "nergens", "nicht", "kein", "keine", "keinen", "pas", "aucun", "aucune", "ni"]);
-const ABOUT_FINDING = new Set([
-  "find", "found", "know", "tell", "contain", "contains", "have", "has", "available", "access", "information", "library", "source", "sources", "documents", "records", "data", "mentioned", "listed", "included",
-  "vinden", "gevonden", "vind", "weet", "weten", "vertellen", "zeggen", "bevat", "bevatten", "heb", "hebben", "beschikbaar", "toegang", "informatie", "gegevens", "bibliotheek", "bron", "bronnen", "documenten", "opgenomen", "vermeld", "staat", "staan", "terug",
-  "finden", "gefunden", "weiss", "enthalten", "informationen", "bibliothek", "quelle", "trouve", "trouver", "information", "bibliotheque",
-]);
-const NEEDS_T = new Set(["can", "don", "doesn", "isn", "couldn"]);
-const NEARBY = 6;
-
-/** Whether an answer says the library does not have it: a denial within a few words of a word about finding or having. */
-export function saysNotFound(answer) {
-  const text = normalizeComparable(answer);
-  if (NOT_FOUND_PHRASES.some((phrase) => text.includes(phrase))) return true;
-  const words = text.split(" ");
-  let lastDenial = -Infinity;
-  let lastFinding = -Infinity;
-  for (const [index, word] of words.entries()) {
-    // "can", "don" and the like only deny with the "t" of their contraction ("can't" becomes "can t").
-    const denial = DENIALS.has(word) && (!NEEDS_T.has(word) || words[index + 1] === "t");
-    if (denial) lastDenial = index;
-    if (ABOUT_FINDING.has(word)) lastFinding = index;
-    if ((denial || ABOUT_FINDING.has(word)) && Math.abs(lastDenial - lastFinding) <= NEARBY) return true;
-  }
-  return false;
 }
 
 /** Whether an answer ends with a question to the user ("Is de buurvrouw iemand uit de wiki?"). */
@@ -121,7 +89,15 @@ async function askOne(chat, model, item, sessionKey) {
       }
       if (event.type === "tool" && event.name === "read_document") row.reads += 1;
       if (event.type === "message" && event.message.role === "assistant" && !event.message.tool_calls) row.answer = event.message.content;
-      if (event.type === "turn") Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, rounds: event.rounds });
+      // The answer before the check round (chat.check), to score the check itself.
+      if (event.type === "draft") row.firstAnswer = event.message.content;
+      if (event.type === "turn") {
+        // What the model read and what its searches showed: the saved answers then say why a source was pointed out.
+        const brief = (items) => items.map((item) => ({ source: item.source, ...(item.path ? { path: item.path } : {}), ...(item.title ? { title: item.title } : {}) }));
+        Object.assign(row, { unverified: event.unverified, rescued: event.rescued, thinkCut: event.thinkCut, reasked: event.reasked || 0, checked: Boolean(event.checked), checkChanged: Boolean(event.checkChanged), rounds: event.rounds,
+          // A check answer that was set aside (empty, cut off, or far shorter than the first answer), to judge that rule by.
+          ...(event.checkSetAside ? { checkSetAside: true, checkAnswer: String(event.checkAnswer || "") } : {}), documentsRead: brief(event.read), documentsSeen: brief(event.seen) });
+      }
     }
   } catch (error) {
     row.error = error.message;
@@ -138,14 +114,20 @@ async function askOne(chat, model, item, sessionKey) {
     notFoundOk: item.expect === "not-found" ? (saysNotFound(row.answer) ? true : askedInstead(row.answer, item, 0) ? null : false) : null,
     empty: !row.answer.trim() || row.answer.startsWith("[The model"),
   });
+  if (row.checked) row.factsBeforeCheck = factsIn(row.firstAnswer || "", item.facts).length;
   return row;
 }
+
+/** A turn in which the model did nothing: no search and no answer. It counts as not answered, and only as that. */
+const didNothing = (row) => row.empty && !row.searched.length;
 
 /** Totals per model. Percentages are of the questions they apply to. */
 export function summarize(model, rows) {
   const count = (test) => rows.filter(test).length;
   const share = (part, whole) => (whole ? Math.round((part / whole) * 100) : null);
-  const withSource = rows.filter((row) => row.rightSource !== null);
+  // What the model did with the library is measured over the turns in which it did something.
+  const acted = rows.filter((row) => !didNothing(row));
+  const withSource = acted.filter((row) => row.rightSource !== null);
   const notFound = rows.filter((row) => row.notFoundOk !== null);
   const factsTotal = rows.reduce((sum, row) => sum + row.factsTotal, 0);
   return {
@@ -154,9 +136,9 @@ export function summarize(model, rows) {
     errors: count((row) => row.error),
     answered: count((row) => !row.empty && !row.error),
     facts: share(rows.reduce((sum, row) => sum + row.factsFound, 0), factsTotal),
-    searched: share(count((row) => row.searched.length > 0), rows.length),
+    searched: share(count((row) => row.searched.length > 0), acted.length),
     rightSource: share(withSource.filter((row) => row.rightSource).length, withSource.length),
-    read: share(count((row) => row.reads > 0), rows.length),
+    read: share(count((row) => row.reads > 0), acted.length),
     notFound: share(notFound.filter((row) => row.notFoundOk).length, notFound.length),
     madeUpSources: rows.reduce((sum, row) => sum + (row.unverified?.length || 0), 0),
     repeatedSearches: rows.reduce((sum, row) => sum + (row.repeated || 0), 0),
@@ -164,41 +146,73 @@ export function summarize(model, rows) {
     askedBack: count((row) => row.askedBack),
     rescued: count((row) => row.rescued),
     thinkCut: count((row) => row.thinkCut),
+    reasked: count((row) => row.reasked),
+    // The check round (chat.check): how often it ran, how often it changed the answer, and the facts without it.
+    checked: count((row) => row.checked),
+    checkChanged: count((row) => row.checkChanged),
+    checkSetAside: count((row) => row.checkSetAside),
+    factsBeforeCheck: share(rows.reduce((sum, row) => sum + (row.checked ? row.factsBeforeCheck : row.factsFound), 0), factsTotal),
     secondsAverage: rows.length ? Math.round((rows.reduce((sum, row) => sum + row.seconds, 0) / rows.length) * 10) / 10 : 0,
   };
 }
 
+export const MAX_RUNS = 20;
+
 /**
- * Ask every question to every model, one after the other. Each question is its own conversation and its own
- * guard session, so one question's calls do not count against the next.
- * @returns {Promise<{ model: string, rows: object[], summary: object }[]>}
+ * Ask every question to every model, one after the other, `runs` times per model. Each question is its own
+ * conversation and its own guard session, so one question's calls do not count against the next.
+ * A model does not answer the same way twice; several runs show how far its numbers move by themselves.
+ * @returns {Promise<{ model: string, run: number, rows: object[], summary: object }[]>} one entry per model and run
  */
-export async function runEval({ getArviro, guard, version, models, questions, log = () => {}, fetchImpl = fetch, onRow = () => {} }) {
+export async function runEval({ getArviro, guard, version, models, questions, runs = 1, log = () => {}, fetchImpl = fetch, onRow = () => {} }) {
   const chat = createChat({ getArviro, guard, version, log, fetchImpl });
   const results = [];
   for (const model of models) {
-    const rows = [];
-    for (const [index, item] of questions.entries()) {
-      const row = await askOne(chat, model, item, `eval:${model}:${index}:${Date.now()}`);
-      rows.push(row);
-      onRow(row, index);
+    for (let run = 1; run <= runs; run += 1) {
+      const rows = [];
+      for (const [index, item] of questions.entries()) {
+        const row = await askOne(chat, model, item, `eval:${model}:${run}:${index}:${Date.now()}`);
+        rows.push(row);
+        onRow(row, index, run);
+      }
+      results.push({ model, run, rows, summary: summarize(model, rows) });
     }
-    results.push({ model, rows, summary: summarize(model, rows) });
   }
   return results;
 }
 
-/** Write each model's rows, answers included, as JSON lines in `folder`. Returns the files written. */
-export function saveEval(results, folder, stamp = new Date().toISOString().replace(/[:.]/g, "-")) {
-  fs.mkdirSync(folder, { recursive: true });
-  return results.map(({ model, rows, summary }) => {
-    const file = path.join(folder, `${stamp}-${model.replace(/[^A-Za-z0-9._-]+/g, "_")}.jsonl`);
-    fs.writeFileSync(file, `${[{ summary }, ...rows].map((row) => JSON.stringify(row)).join("\n")}\n`);
-    return file;
-  });
+/** The results per model, in the order the models were asked: [model, its runs]. */
+function perModel(results) {
+  const models = new Map();
+  for (const result of results) models.set(result.model, [...(models.get(result.model) || []), result]);
+  return [...models];
 }
 
-const percent = (value) => (value === null ? "-" : `${value}%`);
+/**
+ * Each number of a model's summaries over its runs: { mean, min, max }, or null where it does not apply.
+ * @param {object[]} summaries the summaries of one model
+ */
+export function spread(summaries) {
+  const out = { model: summaries[0].model, runs: summaries.length };
+  for (const key of Object.keys(summaries[0])) {
+    if (key === "model") continue;
+    const values = summaries.map((summary) => summary[key]).filter((value) => typeof value === "number");
+    out[key] = values.length
+      ? { mean: Math.round((values.reduce((sum, value) => sum + value, 0) / values.length) * 10) / 10, min: Math.min(...values), max: Math.max(...values) }
+      : null;
+  }
+  return out;
+}
+
+/** Write the rows of each model and run, answers included, as JSON lines in `folder`. Returns the files written. */
+export function saveEval(results, folder, stamp = new Date().toISOString().replace(/[:.]/g, "-")) {
+  fs.mkdirSync(folder, { recursive: true });
+  return perModel(results).flatMap(([model, runs]) => runs.map(({ run, rows, summary }) => {
+    const file = path.join(folder, `${stamp}-${model.replace(/[^A-Za-z0-9._-]+/g, "_")}${runs.length > 1 ? `-run${run}` : ""}.jsonl`);
+    fs.writeFileSync(file, `${[{ summary, ...(runs.length > 1 ? { run, runs: runs.length } : {}) }, ...rows].map((row) => JSON.stringify(row)).join("\n")}\n`);
+    return file;
+  }));
+}
 
 /** "wikipedia x4, library" for a list of searched sources. */
 function groupCounts(ids) {
@@ -218,10 +232,10 @@ export function formatRow(row, index) {
   const parts = [`${String(index + 1).padStart(3)}.`, `${row.seconds}s`.padStart(7)];
   if (row.error) parts.push(`ERROR ${row.error}`);
   else {
-    parts.push(row.searched.length ? `searched ${groupCounts(row.searched)}` : "no search");
+    if (!didNothing(row)) parts.push(row.searched.length ? `searched ${groupCounts(row.searched)}` : "no search");
     if (row.repeated) parts.push(`REPEATED SEARCH x${row.repeated}`);
     else if (row.searched.length >= MANY_SEARCHES) parts.push(`MANY SEARCHES (${row.searched.length})`);
-    if (row.rightSource === false) parts.push("WRONG SOURCE");
+    if (row.rightSource === false && !didNothing(row)) parts.push("WRONG SOURCE");
     if (row.reads) parts.push(`read ${row.reads}`);
     if (row.factsTotal) parts.push(`facts ${row.factsFound}/${row.factsTotal}${row.missing.length ? ` (missing: ${row.missing.join("; ")})` : ""}`);
     if (row.notFoundOk === false) parts.push("DID NOT SAY IT IS NOT THERE");
@@ -230,14 +244,42 @@ export function formatRow(row, index) {
     if (row.unverified?.length) parts.push(`MADE-UP SOURCE: ${shorten(row.unverified)}`);
     if (row.rescued) parts.push("second try");
     if (row.thinkCut) parts.push("thinking cut");
+    if (row.reasked) parts.push("asked again");
+    if (row.checked) parts.push(`${row.checkChanged ? "check changed the answer" : row.checkSetAside ? "check answer set aside" : "check kept the answer"}${row.factsTotal && row.factsBeforeCheck !== row.factsFound ? ` (facts before: ${row.factsBeforeCheck}/${row.factsTotal})` : ""}`);
   }
   return `${parts.join("  ")}  ${row.question.slice(0, 70)}`;
 }
 
-/** The summary table, one line per model. */
+// The columns of the summary table: title, key in the summary, and whether it is a percentage.
+const COLUMNS = [
+  ["questions", "questions"], ["answered", "answered"], ["facts", "facts", true], ["searched", "searched", true], ["right source", "rightSource", true],
+  ["read", "read", true], ["not-found ok", "notFound", true], ["asked back", "askedBack"], ["made-up sources", "madeUpSources"],
+  ["searches per question", "searchesAverage"], ["repeated searches", "repeatedSearches"], ["second tries", "rescued"], ["thinking cut", "thinkCut"],
+  ["asked again", "reasked"], ["seconds", "secondsAverage"],
+];
+// Shown when a check round ran (chat.check): the facts before it stand next to the facts after it.
+const CHECK_COLUMNS = [["checked", "checked"], ["check changed", "checkChanged"], ["check set aside", "checkSetAside"], ["facts before check", "factsBeforeCheck", true]];
+
+/**
+ * The summary table, one line per model. A model that ran more than once gets the mean of its runs, with the
+ * lowest and highest run behind it where they differ: "96.5% (93-100)".
+ */
 export function formatSummary(results) {
-  const header = ["model", "questions", "answered", "facts", "searched", "right source", "read", "not-found ok", "asked back", "made-up sources", "searches per question", "repeated searches", "second tries", "thinking cut", "seconds"];
-  const rows = results.map(({ summary: s }) => [s.model, s.questions, s.answered, percent(s.facts), percent(s.searched), percent(s.rightSource), percent(s.read), percent(s.notFound), s.askedBack, s.madeUpSources, s.searchesAverage, s.repeatedSearches, s.rescued, s.thinkCut, s.secondsAverage].map(String));
+  const models = perModel(results);
+  const several = models.some(([, runs]) => runs.length > 1);
+  const columns = results.some((result) => result.summary.checked) ? [...COLUMNS, ...CHECK_COLUMNS] : COLUMNS;
+  const header = ["model", ...(several ? ["runs"] : []), ...columns.map(([title]) => title)];
+  const rows = models.map(([model, runs]) => {
+    const numbers = spread(runs.map((run) => run.summary));
+    const cells = columns.map(([, key, isPercent]) => {
+      if (!numbers[key] && numbers[key] !== null) return "-";
+      const value = numbers[key];
+      if (value === null) return "-";
+      const unit = isPercent ? "%" : "";
+      return value.min === value.max ? `${value.min}${unit}` : `${value.mean}${unit} (${value.min}-${value.max})`;
+    });
+    return [model, ...(several ? [String(runs.length)] : []), ...cells];
+  });
   const widths = header.map((title, column) => Math.max(title.length, ...rows.map((row) => row[column].length)));
   return [header, ...rows].map((row) => row.map((cell, column) => cell.padEnd(widths[column])).join("  ").trimEnd()).join("\n");
 }

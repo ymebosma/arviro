@@ -30,6 +30,7 @@ let ollama;
 function startFakeOllama() {
   const models = ["chatty:latest"];
   const chats = [];
+  const garbled = {};
   const node = http.createServer((req, res) => {
     if (req.url === "/api/tags") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ models: models.map((name) => ({ name })) })); }
     if (req.url === "/api/chat") {
@@ -62,6 +63,48 @@ function startFakeOllama() {
         if (request.model === "searcher") {
           if (request.tools) return search(`burn ${request.messages.length}`);
           line({ role: "assistant", content: "Final answer from what I found." });
+          return finish();
+        }
+        // "garbler" writes a tool call that Ollama cannot read, the first time; "garbler-always" every time.
+        if (request.model.startsWith("garbler")) {
+          garbled[request.model] = (garbled[request.model] || 0) + 1;
+          if (request.model === "garbler-always" || garbled[request.model] === 1) {
+            line({ role: "assistant", content: "Let me " });
+            res.write(`${JSON.stringify({ error: "expected element type <function> but have <parameter>" })}\n`);
+            return res.end();
+          }
+          if (last.role === "user") return search(last.content);
+          line({ role: "assistant", content: "Answer after a second try." });
+          return finish();
+        }
+        // "silent" returns nothing at all the first time (no text, no tool call, no error); "silent-always" every time.
+        if (request.model.startsWith("silent")) {
+          garbled[request.model] = (garbled[request.model] || 0) + 1;
+          if (request.model === "silent-always" || garbled[request.model] === 1) return finish();
+          line({ role: "assistant", content: "Answer after a silent round." });
+          return finish();
+        }
+        // "checker" says it found nothing, and finds it when asked to check; "checker-right" answers and repeats its answer;
+        // "checker-silent" returns nothing in the check; "checker-remark" only says that nothing needs to change.
+        if (request.model.startsWith("checker")) {
+          const first = request.model === "checker" ? "I could not find that in the library." : `Cool a burn under running water for ten minutes. ${"Keep the person warm. ".repeat(10)}Source: manuals/first-aid.md`;
+          const checking = request.messages.some((message) => message.role === "user" && String(message.content).startsWith("(Note from Arviro, not the user: check your answer"));
+          if (!checking) {
+            if (last.role === "user") return search(last.content);
+            line({ role: "assistant", content: first });
+            return finish();
+          }
+          if (request.model === "checker-silent") return finish();
+          // "checker-thinker" thinks on and on in the check while it may think.
+          if (request.model === "checker-thinker" && request.think !== false) {
+            for (let index = 0; index < 50; index += 1) line({ role: "assistant", content: "", thinking: "hmm " });
+            return finish();
+          }
+          if (request.model === "checker-thinker") { line({ role: "assistant", content: first }); return finish(); }
+          if (request.model === "checker-remark") { line({ role: "assistant", content: "Nothing needs to change." }); return finish(); }
+          if (request.model === "checker-right") { line({ role: "assistant", content: first }); return finish(); }
+          if (last.role !== "tool") return search("cooling a burn");
+          line({ role: "assistant", content: "Cool a burn for ten minutes. Source: manuals/first-aid.md" });
           return finish();
         }
         // "citer" searches once and then names a document and a title it never saw.
@@ -625,6 +668,34 @@ test("the chat helps small models: a last round without tools, a second try, a t
     assert.equal(answerOf(overthinker.events), "Short answer.");
     assert.equal(overthinker.events.find((event) => event.type === "turn").thinkCut, true);
 
+    // A tool call Ollama cannot read: the round is asked once more, and what had streamed is taken back.
+    ollama.chats.length = 0;
+    const garbler = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "garbler" });
+    assert.equal(garbler.status, 200);
+    assert.equal(answerOf(garbler.events), "Answer after a second try.");
+    assert.deepEqual(types(garbler.events).slice(0, 3), ["token", "retry", "note"]);
+    assert.match(garbler.events.find((event) => event.type === "note").text, /could not read; the round was asked again/);
+    assert.equal(garbler.events.find((event) => event.type === "turn").reasked, 1);
+    assert.equal(ollama.chats.length, 3, "the first round twice, then the answer");
+    assert.deepEqual(ollama.chats[1].messages, ollama.chats[0].messages, "the same round again");
+    // It fails again: the turn ends with the error, as before.
+    const always = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "garbler-always" });
+    assert.equal(always.events.at(-1).type, "error");
+    assert.equal(types(always.events).filter((type) => type === "note").length, 1);
+
+    // A first round that returns nothing at all: asked once more; nothing again ends the turn with the usual line.
+    ollama.chats.length = 0;
+    const silent = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "silent" });
+    assert.equal(answerOf(silent.events), "Answer after a silent round.");
+    assert.match(silent.events.find((event) => event.type === "note").text, /returned nothing; the round was asked again/);
+    assert.equal(silent.events.find((event) => event.type === "turn").reasked, 1);
+    assert.equal(ollama.chats.length, 2);
+    ollama.chats.length = 0;
+    const silentAlways = await chatTurn(other.url, { messages: [{ role: "user", content: "hi" }], model: "silent-always" });
+    assert.match(answerOf(silentAlways.events), /^\[The model gave no answer/);
+    assert.equal(silentAlways.events.find((event) => event.type === "turn").reasked, 1);
+    assert.equal(ollama.chats.length, 2, "asked again once, not more");
+
     // Sources it never saw are pointed out; the ones it saw are fine, with or without the source id in front.
     const citer = await chatTurn(other.url, { messages: [{ role: "user", content: "How long should I cool a burn?" }], model: "citer" });
     const turn = citer.events.find((event) => event.type === "turn");
@@ -632,6 +703,108 @@ test("the chat helps small models: a last round without tools, a second try, a t
     assert.match(answerOf(citer.events), /\[Arviro did not find "manuals\/made-up\.md", "Imaginary Guide \(library\)" among the documents searched or read in this conversation/);
   } finally {
     await other.close();
+  }
+  writeConfig();
+});
+
+test("the check round: the model compares its answer with what it found, and the first answer stands when the check gives none", async () => {
+  const types = (events) => events.map((event) => event.type);
+  const answerOf = (events) => events.filter((event) => event.type === "message" && event.message.role === "assistant").at(-1).message.content;
+  const turnOf = (events) => events.find((event) => event.type === "turn");
+  const ask = (base, model, content = "How long should I cool a burn?") => chatTurn(base, { messages: [{ role: "user", content }], model });
+  const isCheck = (message) => message.role === "user" && message.content.startsWith("(Note from Arviro, not the user: check your answer");
+  // By default only an answer that says something was not found is checked.
+  const byDefault = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest" } });
+  try {
+    ollama.chats.length = 0;
+    const found = await ask(byDefault.url, "checker");
+    assert.equal(answerOf(found.events), "Cool a burn for ten minutes. Source: manuals/first-aid.md");
+    assert.deepEqual(types(found.events), ["message", "tool", "toolResult", "message", "token", "draft", "note", "message", "tool", "toolResult", "message", "token", "message", "turn", "done"]);
+    assert.equal(found.events.find((event) => event.type === "draft").message.content, "I could not find that in the library.");
+    assert.match(found.events.find((event) => event.type === "note").text, /asked to check its answer/);
+    assert.equal(turnOf(found.events).checked, true);
+    assert.equal(turnOf(found.events).checkChanged, true);
+    // The model saw its first answer and the request during the check, with the lookups of the check behind them...
+    assert.equal(ollama.chats.length, 4);
+    const lastRequest = ollama.chats[3].messages;
+    assert.deepEqual(lastRequest.map((message) => message.role), ["system", "user", "assistant", "tool", "assistant", "user", "assistant", "tool"]);
+    assert.equal(lastRequest[4].content, "I could not find that in the library.");
+    assert.ok(isCheck(lastRequest[5]));
+    assert.ok(ollama.chats[2].tools, "the check may look things up");
+    // ...and neither is kept in the conversation of the page: the lookups and the final answer are.
+    const kept = found.events.filter((event) => event.type === "message").map((event) => event.message);
+    assert.deepEqual(kept.map((message) => message.role), ["assistant", "tool", "assistant", "tool", "assistant"]);
+    assert.ok(!kept.some((message) => message.content === "I could not find that in the library." || isCheck(message)));
+    // An answer that does not say "not found" is not checked in this mode, and neither is a greeting.
+    ollama.chats.length = 0;
+    const right = await ask(byDefault.url, "checker-right");
+    assert.equal(turnOf(right.events).checked, false);
+    assert.equal(ollama.chats.length, 2);
+  } finally {
+    await byDefault.close();
+  }
+  const always = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always" } });
+  try {
+    // The same answer again: checked, not changed.
+    ollama.chats.length = 0;
+    const right = await ask(always.url, "checker-right");
+    assert.equal(ollama.chats.length, 3);
+    assert.equal(turnOf(right.events).checked, true);
+    assert.equal(turnOf(right.events).checkChanged, false);
+    assert.equal(turnOf(right.events).checkSetAside, false);
+    assert.equal(ollama.chats[2].think, undefined, "the check thinks as the chat does, unless chat.checkThink says otherwise");
+    assert.match(answerOf(right.events), /^Cool a burn under running water for ten minutes\./);
+    // No answer from the check, or a remark instead of the answer: the first answer stands, and is written again.
+    for (const model of ["checker-silent", "checker-remark"]) {
+      const kept = await ask(always.url, model);
+      assert.match(answerOf(kept.events), /^Cool a burn under running water for ten minutes\./, model);
+      assert.equal(turnOf(kept.events).checkChanged, false, model);
+      assert.equal(turnOf(kept.events).checkSetAside, true, model);
+      assert.equal(turnOf(kept.events).checkAnswer, model === "checker-remark" ? "Nothing needs to change." : "", model);
+      assert.ok(kept.events.some((event) => event.type === "note" && /the first answer stands/.test(event.text)), model);
+      const after = kept.events.slice(kept.events.findLastIndex((event) => event.type === "retry"));
+      assert.match(after.filter((event) => event.type === "token").map((event) => event.text).join(""), /^Cool a burn under running water/, model);
+    }
+    // An answer without any lookup has nothing to be checked against.
+    ollama.chats.length = 0;
+    const greeting = await chatTurn(always.url, { messages: [{ role: "user", content: "hi" }], model: "silent-check" });
+    assert.equal(turnOf(greeting.events).checked, false);
+  } finally {
+    await always.close();
+  }
+  // The check round without thinking, while the first answer thinks as the model likes.
+  const quiet = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThink: false } });
+  try {
+    ollama.chats.length = 0;
+    await ask(quiet.url, "checker-right");
+    assert.deepEqual(ollama.chats.map((request) => request.think), [undefined, undefined, false]);
+  } finally {
+    await quiet.close();
+  }
+  // The check round with a thinking budget of its own, smaller than the chat's.
+  const brief = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThinkBudget: 10 } });
+  try {
+    ollama.chats.length = 0;
+    const thinker = await ask(brief.url, "checker-thinker");
+    assert.ok(thinker.events.some((event) => event.type === "note" && /stopped after 10 tokens \(chat\.checkThinkBudget\)/.test(event.text)));
+    assert.equal(ollama.chats.length, 4);
+    assert.equal(ollama.chats[3].think, false);
+    assert.match(ollama.chats[3].messages.at(-1).content, /you have thought long enough/);
+    assert.match(answerOf(thinker.events), /^Cool a burn under running water for ten minutes\./);
+    assert.equal(turnOf(thinker.events).checkChanged, false);
+    assert.equal(turnOf(thinker.events).thinkCut, true);
+  } finally {
+    await brief.close();
+  }
+  const off = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "off" } });
+  try {
+    ollama.chats.length = 0;
+    const plain = await ask(off.url, "checker");
+    assert.equal(answerOf(plain.events), "I could not find that in the library.");
+    assert.equal(turnOf(plain.events).checked, false);
+    assert.equal(ollama.chats.length, 2);
+  } finally {
+    await off.close();
   }
   writeConfig();
 });
@@ -654,8 +827,8 @@ test("arviro eval asks each model the questions through the chat and measures th
   assert.match(stdout, /\nciter\n +1\. .*MADE-UP SOURCE: manuals\/made-up\.md; Imaginary Guide \(library\)/);
   assert.match(stdout, /\nrescuer\n +1\. .*second try/);
   assert.match(stdout, /\nmodel +questions +answered +facts +searched +right source/);
-  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +0 +4 +1 +0 +0 +0 /);
-  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +0 +1 +0 +2 +0 /);
+  assert.match(stdout, /\nciter +2 +2 +0% +100% +50% +0% +- +0 +4 +1 +0 +0 +0 +0 /);
+  assert.match(stdout, /\nrescuer +2 +2 +50% +100% +50% +0% +- +0 +0 +1 +0 +2 +0 +0 /);
   const files = fs.readdirSync(saveTo).sort();
   assert.equal(files.length, 3);
   const lines = fs.readFileSync(path.join(saveTo, files.find((name) => name.endsWith("-citer.jsonl"))), "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -663,6 +836,35 @@ test("arviro eval asks each model the questions through the chat and measures th
   assert.match(lines[1].answer, /Imaginary Guide/);
   assert.deepEqual(lines[1].searched, ["library"]);
   assert.deepEqual(lines[1].searches, [{ source: "library", query: "How long should I cool a burn?" }], "the saved answers keep the search words");
+  assert.deepEqual(lines[1].documentsSeen[0], { source: "library", path: "manuals/first-aid.md", title: "First aid at home" }, "and what the searches showed");
+  // Several runs: a line per question for each run, the mean and the range in the table, a file per run.
+  // "garbler-eval" writes an unreadable tool call the first time only, so the two runs differ.
+  const saveRuns = path.join(fixture.root, "eval-runs");
+  const several = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "garbler-eval", "--runs", "2", "--save", saveRuns], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
+  });
+  assert.equal(several.code, 0, several.stderr);
+  assert.match(several.stdout, /\ngarbler-eval \(run 1 of 2\)\n +1\. .*searched library .* asked again +How long/);
+  assert.match(several.stdout, /\ngarbler-eval \(run 2 of 2\)\n +1\. .*searched library +facts 0\/2 \([^)]*\) +How long/);
+  assert.match(several.stdout, /\nmodel +runs +questions +answered/);
+  assert.match(several.stdout, /\ngarbler-eval +2 +2 +2 .* 0\.5 \(0-1\) +\d/);
+  assert.deepEqual(fs.readdirSync(saveRuns).map((name) => name.replace(/^.*-garbler/, "garbler")).sort(), ["garbler-eval-run1.jsonl", "garbler-eval-run2.jsonl"]);
+  const wrong = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "chatty:latest", "--runs", "0"], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));
+  });
+  assert.equal(wrong.code, 2);
+  assert.match(wrong.stderr, /--runs is a whole number from 1 to 20/);
+  // The check round (chat.check, by default after a "not found" answer): the line and the table show what it changed.
+  const checkedRun = await new Promise((resolve) => {
+    execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "checker", "--save", path.join(fixture.root, "eval-check")], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
+  });
+  assert.equal(checkedRun.code, 0, checkedRun.stderr);
+  assert.match(checkedRun.stdout, /\n +1\. .*facts 1\/2 \(missing: based on the library\) +check changed the answer \(facts before: 0\/2\)/);
+  assert.match(checkedRun.stdout, /seconds +checked +check changed +check set aside +facts before check\n/);
+  assert.match(checkedRun.stdout, /\nchecker +2 +2 +50% .* 2 +2 +0 +0%\n/);
+  const checkedLines = fs.readFileSync(path.join(fixture.root, "eval-check", fs.readdirSync(path.join(fixture.root, "eval-check"))[0]), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(checkedLines[1].firstAnswer, "I could not find that in the library.");
+  assert.equal(checkedLines[1].answer, "Cool a burn for ten minutes. Source: manuals/first-aid.md");
   // Without a model there is nothing to ask.
   const none = await new Promise((resolve) => {
     execFile(process.execPath, [cli, "eval", questions, "--config", configPath], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stderr: err }));
