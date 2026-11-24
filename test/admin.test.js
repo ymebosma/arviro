@@ -764,7 +764,7 @@ test("the check round: the model compares its answer with what it found, and the
     assert.equal(turnOf(right.events).checked, true);
     assert.equal(turnOf(right.events).checkChanged, false);
     assert.equal(turnOf(right.events).checkSetAside, false);
-    assert.deepEqual(ollama.chats.map((request) => request.think), [undefined, undefined, false], "the check round does not think, while the first answer thinks as the model likes");
+    assert.equal(ollama.chats[2].think, undefined, "the check thinks as the chat does, unless chat.checkThink says otherwise");
     // A long "not found" and then a short answer: that is the correction, not a remark, so it is the answer.
     const corrected = await ask(always.url, "checker-long");
     assert.equal(answerOf(corrected.events), "Cool a burn for ten minutes. Source: manuals/first-aid.md");
@@ -789,17 +789,17 @@ test("the check round: the model compares its answer with what it found, and the
   } finally {
     await always.close();
   }
-  // The check round may think when chat.checkThink allows it: then it follows chat.think, here on.
-  const thinking = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", think: true, checkThink: true } });
+  // The check round without thinking, while the first answer thinks as the model likes.
+  const quiet = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThink: false } });
   try {
     ollama.chats.length = 0;
-    await ask(thinking.url, "checker-right");
-    assert.deepEqual(ollama.chats.map((request) => request.think), [true, true, true]);
+    await ask(quiet.url, "checker-right");
+    assert.deepEqual(ollama.chats.map((request) => request.think), [undefined, undefined, false]);
   } finally {
-    await thinking.close();
+    await quiet.close();
   }
   // The check round with a thinking budget of its own, smaller than the chat's.
-  const brief = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThink: true, checkThinkBudget: 10 } });
+  const brief = await startServer({}, { chat: { url: ollama.url(), model: "chatty:latest", check: "always", checkThinkBudget: 10 } });
   try {
     ollama.chats.length = 0;
     const thinker = await ask(brief.url, "checker-thinker");

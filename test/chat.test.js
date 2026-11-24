@@ -170,9 +170,29 @@ test("checkCitations accepts a printed title that a search result or a later pag
   assert.deepEqual(checkCitations("The modem supports 3G/3.75G; see notes/unknown.md and backups/old.7z.", known, { sources }), ["notes/unknown.md", "backups/old.7z"]);
 });
 
+test("checkCitations leaves the answer's own list lines alone", () => {
+  const known = createLedger();
+  known.record("search_library", { source: "offline", query: "router" }, JSON.stringify({ source: "offline", results: [{ title: "exr ig 2", excerpt: "Status LEDs", read: { source: "offline", path: "router/exr-ig-2.pdf" } }] }));
+  known.record("read_document", { source: "offline", path: "router/exr-ig-2.pdf", offset: 30 }, "source: offline\npath: router/exr-ig-2.pdf\npage 30\n30.1 | Open the address in a browser.");
+  const check = (answer) => checkCitations(answer, known, { sources: [{ id: "offline", description: "Manuals and handbooks" }] });
+  // A page as a bold label with a line quoted from it (the printed page number, not the one of the read).
+  assert.deepEqual(check('Answer.\n\n**Source:** router/exr-ig-2.pdf\n\n- **Page 23:** "Open the address in a browser."\n- **Pagina 24:** „Voer het wachtwoord in."'), []);
+  // A sentence that begins with "Sources" opens no sources block, and a label that introduces something names no source.
+  assert.deepEqual(check("Answer.\n\nSources state the following:\n- three litres of water\n- Imaginary Handbook"), []);
+  assert.deepEqual(check("Answer.\n\nSources:\n- **Recommendation per person per day:**\n- router/exr-ig-2.pdf"), []);
+  // The end of a remark in brackets that held a semicolon.
+  assert.deepEqual(check("Answer.\n\nSources: router/exr-ig-2.pdf, page 30 (192.168.1.1; this address is the default for routers in this series)"), []);
+  // The sources line in its usual shapes still opens the block, and made-up items in it are named.
+  for (const opening of ["Sources:", "**Sources:**", "## Sources", "**Bronnen**", "Bron -", "Sources –"]) {
+    const answer = opening.endsWith("-") || opening.endsWith("–") ? `Answer.\n\n${opening} Imaginary Handbook` : `Answer.\n\n${opening}\n- Imaginary Handbook`;
+    assert.deepEqual(check(answer), ["Imaginary Handbook"], opening);
+  }
+  assert.deepEqual(check("Answer.\n\nSources:\n- Page 99: Imaginary Handbook\n- Imaginary Handbook (see the note; it is the default)"), ["Page 99: Imaginary Handbook", "Imaginary Handbook (see the note; it is the default)"]);
+});
+
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"*a ".repeat(100_000)}`, `Sources: ${"**".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"*a ".repeat(100_000)}`, `Sources: ${")".repeat(400_000)}`, `Sources: ${"p. 1: \"a\"; ".repeat(50_000)}`, `${"Sources x\n".repeat(50_000)}`, `Sources: ${"**".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);

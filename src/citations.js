@@ -119,7 +119,10 @@ export function ledgerFromHistory(history) {
   return ledger;
 }
 
-const SOURCES_LINE = /^[\s*_#>-]*(?:sources?|bronnen|bron|quellen|quelle)\b[\s*_]*:?/i;
+// The line that opens the sources: the word as a label ("Sources:", "**Bron:**", "Bronnen - ...") or as a heading
+// of its own ("## Sources"). A sentence that begins with the word ("Sources state the following:") is not one.
+const SOURCES_LINE = /^[\s*_#>-]*(?:sources?|bronnen|bron|quellen|quelle)\b[\s*_]*(?::|\s[-–—]\s|$)/i;
+const QUOTE_MARKS = "\"“„'‘«";
 const NONE_ITEM = /^(?:none|geen|keine|aucune?|-)\b/i;
 const PIECE_SPLIT = /[\s`"'<>,;]+/;
 // How an item begins that is a remark about the sources, not a source: a note, a quotation, a cross-reference.
@@ -227,6 +230,14 @@ function isPointer(item) {
   const colon = item.indexOf(":");
   const label = colon > 0 && colon < 40 ? contentWords(item.slice(0, colon)) : new Set();
   return [...contentWords(withoutBrackets(item))].every((word) => /^\d+$/.test(word) || label.has(word));
+}
+
+/** Whether an item is a page or line reference, a colon, and then nothing but a quotation. */
+function pointerWithQuote(item) {
+  const colon = item.indexOf(":");
+  if (colon <= 0 || colon > 40) return false;
+  const rest = strip(item.slice(colon + 1), "*_ \t", { end: false });
+  return isPointer(item.slice(0, colon)) && QUOTE_MARKS.includes(rest[0]);
 }
 
 /** The pages and lines an item points to: the numbers right after "page", "p.", "regel" and the like, as { number, kind }. */
@@ -346,6 +357,12 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
   };
   for (const item of items.map((value) => strip(strip(value, "*_ \t(", { end: false }), "*_. \t", { start: false })).filter(Boolean)) {
     if (NONE_ITEM.test(item)) continue;
+    // A label that introduces something ("Recommendation per person per day:") names no source.
+    if (item.endsWith(":")) continue;
+    // The end of a remark in brackets that held a semicolon: "... (192.168.1.1; this is the default)".
+    let open = 0;
+    for (const character of item) open += character === "(" ? 1 : character === ")" ? -1 : 0;
+    if (open < 0) continue;
     const pieces = item.split(PIECE_SPLIT).map(trimPiece);
     // A path in the item was judged above: known, or already pointed out.
     if (pieces.some((piece) => piece.includes("/") && (knownPath(piece) || unverified.includes(piece)))) continue;
@@ -359,8 +376,9 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     const named = heads(item).some((candidate) => titleNamed(candidate, pageNumbers) || printedTitle(candidate))
       // A title in quotation marks or in italics, whatever is around it: Wikipedia (Nederlandstalig), artikel "Gouda".
       || quotedParts(item.replaceAll("**", "*")).map((part) => contentWords(part)).some((quoted) => quoted.size && knownNames.some((names) => names.size === quoted.size && [...quoted].every((word) => names.has(word))))
-      // A page or line of a document that was read, written as an item of its own.
-      || (ledger.read.size > 0 && isPointer(item))
+      // A page or line of a document that was read, written as an item of its own, or as a label with a quotation
+      // from that page behind it: **Page 23:** "Open the address in a browser."
+      || (ledger.read.size > 0 && (isPointer(item) || pointerWithQuote(item)))
       // Pages or lines that a read did show: the document, under another name (a translated title).
       || (numbers.length > 0 && numbers.every((pointer) => ledger.showed(pointer.number, pointer.kind)))
       // A map source: there is no document, the model says what it searched for.

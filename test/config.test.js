@@ -117,10 +117,10 @@ test("invalid configurations are rejected with a clear message", () => {
   assert.equal(normalizeConfig({ sources: { library: { path: "x" } }, chat: { check: "always" } }).chat.check, "always");
   // Thinking in the check round follows the chat's settings unless it gets its own.
   const plain = normalizeConfig({ sources: { library: { path: "x" } }, chat: { thinkBudget: 1500 } }).chat;
-  assert.equal(plain.checkThink, false, "the check round does not think unless it is allowed to");
+  assert.equal(plain.checkThink, null);
   assert.equal(plain.checkThinkBudget, 1500);
-  const own = normalizeConfig({ sources: { library: { path: "x" } }, chat: { checkThink: true, checkThinkBudget: 800 } }).chat;
-  assert.equal(own.checkThink, true);
+  const own = normalizeConfig({ sources: { library: { path: "x" } }, chat: { checkThink: false, checkThinkBudget: 800 } }).chat;
+  assert.equal(own.checkThink, false);
   assert.equal(own.checkThinkBudget, 800);
   assert.throws(() => normalizeConfig({ sources: { library: { path: "x" } }, chat: { checkThinkBudget: -1 } }), /chat\.checkThinkBudget/);
   assert.throws(() => normalizeConfig({ sources: { "Bad Id": { path: "x" } } }), ConfigError);

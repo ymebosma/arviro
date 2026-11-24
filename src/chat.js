@@ -265,7 +265,7 @@ export function createChat({ getArviro, guard, version, log = () => {}, fetchImp
         note = null;
         // The check round has its own settings for thinking: it thinks to the budget more often than a first answer.
         const thinking = check
-          ? { think: config.chat.checkThink ? config.chat.think : false, budget: config.chat.checkThinkBudget, setting: "chat.checkThinkBudget" }
+          ? { think: config.chat.checkThink ?? config.chat.think, budget: config.chat.checkThinkBudget, setting: "chat.checkThinkBudget" }
           : { think: config.chat.think, budget: config.chat.thinkBudget, setting: "chat.thinkBudget" };
         let result;
         for (let attempt = 1; ; attempt += 1) {
