@@ -4,6 +4,12 @@ import { asciiLower, ftsQuery, normalizeComparable, tokensFor } from "./text.js"
 const LEXICAL_CANDIDATES = 80;
 const SEMANTIC_CANDIDATES = 120;
 const MAX_PASSAGES_PER_DOCUMENT = 2;
+// A query word that only a few documents hold is strong evidence: at most this many documents, and at most this
+// share of the documents searched (one document always counts).
+const RARE_DOCUMENTS = 3;
+const RARE_SHARE = 0.05;
+// The best passage for each of this many rare words comes before the passages that match by meaning alone.
+const RARE_WORDS = 2;
 
 export function createDocumentSearch(db) {
   let cache = null;
@@ -65,6 +71,28 @@ export function createDocumentSearch(db) {
   }
 
   /**
+   * The best passage for each query word that only a few of the searched documents hold (a name, a model number,
+   * a rare noun): the ids of at most RARE_WORDS passages, rarest word first. Counting stops at RARE_DOCUMENTS + 1
+   * documents, so a common word costs little.
+   */
+  function rarePassages(queryTerms, filters, filterValues) {
+    const where = filters.length ? ` AND ${filters.join(" AND ")}` : "";
+    const matching = `FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid JOIN sources s ON s.id=c.source_id WHERE chunks_fts MATCH ?${where}`;
+    const total = Number(db.prepare(`SELECT count(*) AS n FROM sources s${filters.length ? ` WHERE ${filters.join(" AND ")}` : ""}`).get(...filterValues).n);
+    const few = Math.min(RARE_DOCUMENTS, Math.max(1, Math.ceil(total * RARE_SHARE)));
+    const countDocuments = db.prepare(`SELECT count(*) AS n FROM (SELECT DISTINCT c.source_id ${matching} LIMIT ${RARE_DOCUMENTS + 1})`);
+    const bestPassage = db.prepare(`SELECT c.id, bm25(chunks_fts, 1.0, 2.5, 1.5) AS score ${matching} ORDER BY score LIMIT 1`);
+    const rare = [];
+    for (const term of queryTerms) {
+      const match = ftsQuery(term);
+      if (!match) continue;
+      const documents = Number(countDocuments.get(match, ...filterValues).n);
+      if (documents >= 1 && documents <= few) rare.push({ documents, id: Number(bestPassage.get(match, ...filterValues).id) });
+    }
+    return new Set(rare.sort((a, b) => a.documents - b.documents).slice(0, RARE_WORDS).map((item) => item.id));
+  }
+
+  /**
    * @param {object} options
    * @param {string} options.query          text used for matching and ranking
    * @param {number[]|null} options.queryVector  embedding of the query, or null for full-text search only
@@ -110,16 +138,21 @@ export function createDocumentSearch(db) {
         WHERE chunks_fts MATCH ?${filters.length ? ` AND ${filters.join(" AND ")}` : ""} ORDER BY score LIMIT ${LEXICAL_CANDIDATES}
       `).all(match, ...filterValues) : [];
       const lexicalRanks = new Map(lexical.map((row, index) => [Number(row.id), index + 1]));
+      const promoted = rarePassages(queryTerms, filters, filterValues);
+      // A promoted passage is a literal hit by definition; with many other words in the query it can fall outside the list.
+      for (const id of promoted) if (!lexicalRanks.has(id)) lexicalRanks.set(id, LEXICAL_CANDIDATES);
       const semantic = queryVector && !embeddingMismatch ? semanticCandidates(store, queryVector, isAllowed) : [];
       const semanticRanks = new Map(semantic.map((row, index) => [row.id, { rank: index + 1, similarity: row.similarity }]));
 
-      // Reciprocal rank fusion, slightly favouring meaning over literal matches.
+      // Reciprocal rank fusion, slightly favouring meaning over literal matches. On its own that puts the best
+      // literal-only passage behind fourteen meaning-only ones, and the embedding of a short query is often
+      // confidently wrong; so the best passage for a rare word counts as the best match by meaning too.
       const fused = [...new Set([...lexicalRanks.keys(), ...semanticRanks.keys()])].map((id) => {
         const lexicalRank = lexicalRanks.get(id);
         const semanticRank = semanticRanks.get(id);
         return {
           id,
-          score: (lexicalRank ? 0.45 / (60 + lexicalRank) : 0) + (semanticRank ? 0.55 / (60 + semanticRank.rank) : 0),
+          score: (lexicalRank ? 0.45 / (60 + lexicalRank) : 0) + (promoted.has(id) ? 0.55 / 61 : semanticRank ? 0.55 / (60 + semanticRank.rank) : 0),
           similarity: semanticRank?.similarity ?? null,
         };
       }).sort((a, b) => b.score - a.score);

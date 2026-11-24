@@ -4,7 +4,7 @@ import path from "node:path";
 import test, { after, before } from "node:test";
 import { createArviro, expandQuery, inferPrefix } from "../src/arviro.js";
 import { normalizeConfig } from "../src/config.js";
-import { createEmbedder } from "../src/embeddings.js";
+import { createEmbedder, PREFIX } from "../src/embeddings.js";
 import { buildIndex, listDocuments } from "../src/indexer.js";
 import { UserInputError } from "../src/text.js";
 import { conceptEmbedder, fixtureConfig, makeFixture } from "./helpers.js";
@@ -255,6 +255,43 @@ test("with embeddings, a passage can match by meaning alone", async () => {
     const rebuilt = await buildIndex(resized, concepts, { log: (message) => logged.push(message) });
     assert.equal(rebuilt.documents.indexed, 8);
     assert.ok(logged.some((message) => /embedding size changed \(5 -> 6\)/.test(message)));
+  });
+});
+
+test("a literal hit on a word that few documents have reaches the first results, whatever the embeddings say", async () => {
+  // A short query lands far from the one note that holds its word (similarity 0.6) and close to everything else (1.0),
+  // as embeddings of one or two words do: the meaning-only passages would fill the results.
+  const misled = {
+    enabled: true,
+    model: "test-misled",
+    async embed(inputs, prefix) {
+      return inputs.map((input) => (prefix !== PREFIX.query && input.toLowerCase().includes("naaimachine") ? [0.6, 0.8, 0] : [1, 0, 0]));
+    },
+  };
+  await withFixture((own) => {
+    for (let index = 1; index <= 140; index += 1) {
+      fs.writeFileSync(path.join(own.library, `manuals/software-${index}.md`), `# Software update ${index}\n\nInstall the update, restart the program and check the version number ${index}.\n`);
+    }
+    fs.writeFileSync(path.join(own.library, "manuals/naaimachine.md"), "# Naaimachine\n\nDe naaimachine staat in de kast. Rijg de draad in van boven naar beneden en zet de spoel erin.\n");
+    return { config: fixtureConfig(own, { embedding: { provider: "ollama", model: "test-misled", dimensions: 3 } }), embedder: misled };
+  }, async ({ arviro: ownArviro }) => {
+    for (const query of ["naaimachine", "naaimachine inrijgen", "hoe rijg ik de draad in de naaimachine"]) {
+      const found = await ownArviro.search({ source: "library", query });
+      assert.equal(found.results[0].read.path, "manuals/naaimachine.md", query);
+    }
+    // A word that many documents have gets no such place: the order is the fused one, with a passage of every kind.
+    const common = await ownArviro.search({ source: "library", query: "update" });
+    assert.ok(common.results.every((result) => result.read.path.startsWith("manuals/software-")), "the common word finds the documents that hold it");
+    // A rare word that happens to be in the question takes one place, not the results: the passages for the rest of
+    // the question are still there.
+    const mixed = await ownArviro.search({ source: "library", query: "naaimachine software update version" });
+    assert.equal(mixed.results[0].read.path, "manuals/naaimachine.md");
+    assert.ok(mixed.results.filter((result) => result.read.path.startsWith("manuals/software-")).length >= mixed.results.length - 2);
+    // The word counts as rare within the sources that are searched: another source's documents play no part.
+    const elsewhere = await ownArviro.search({ source: "wiki", query: "naaimachine" });
+    assert.ok(!elsewhere.results.some((result) => result.read.path.includes("naaimachine")));
+    const publicOnly = await ownArviro.search({ source: "library", query: "naaimachine", scope: "public" });
+    assert.equal(publicOnly.results[0].read.path, "manuals/naaimachine.md");
   });
 });
 
