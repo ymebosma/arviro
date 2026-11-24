@@ -302,7 +302,7 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
   const text = String(answer || "").replaceAll("](", " ");
   const known = ledger.all();
   const paths = known.filter((item) => item.path).map((item) => normalPath(item.path));
-  const titles = known.map((item) => String(item.title || "").toLowerCase()).filter((title) => title.length >= 3);
+  const titles = known.map((item) => String(item.title || "").toLowerCase()).filter((title) => title.length >= 3).map((title) => ({ title, long: contentWords(title).size > 2 }));
   // The words of each title and each file name, for an item that cites a document in its own words.
   const knownNames = known.flatMap((item) => [contentWords(item.title || ""), contentWords(String(item.path || "").split("/").at(-1).replace(/\.[a-z0-9]{1,5}$/i, ""))]).filter((names) => names.size);
   const sourceIds = new Set([...ledger.sources, ...known.map((item) => item.source)].map((id) => id.toLowerCase()));
@@ -317,8 +317,9 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     if (!wanted) return false;
     return paths.some((candidate) => candidate === wanted || candidate.endsWith(`/${wanted}`) || wanted.endsWith(`/${candidate}`));
   };
-  const unverified = [];
-  const flag = (value) => { if (!unverified.includes(value)) unverified.push(value); };
+  // A set, so that an answer with very many made-up items stays linear.
+  const unverified = new Set();
+  const flag = (value) => unverified.add(value);
 
   // Paths and links: a piece with a slash that looks like a document path or an encyclopedia link.
   for (const raw of text.split(PIECE_SPLIT)) {
@@ -334,7 +335,7 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
   // The closing sources line, item by item.
   const lines = text.split("\n");
   const index = lines.findLastIndex((line) => SOURCES_LINE.test(line));
-  if (index < 0) return unverified;
+  if (index < 0) return [...unverified];
   const head = lines[index].replace(SOURCES_LINE, "");
   const items = head.split(/;| \| /).map((item) => item.trim());
   for (const line of lines.slice(index + 1)) {
@@ -344,9 +345,10 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
   }
   const titleNamed = (candidate, pageNumbers) => {
     const lower = candidate.trim().toLowerCase();
+    const words = contentWords(candidate);
     // Literally: the same title, a longer title inside it, or it inside a title. Short titles go by their words.
-    return titles.some((title) => lower === title || (lower.includes(title) && contentWords(title).size > 2) || (title.includes(lower) && contentWords(lower).size >= 2))
-      || namesByWords(contentWords(candidate), knownNames, sourceWords, pageNumbers);
+    return titles.some(({ title, long }) => lower === title || (long && lower.includes(title)) || (words.size >= 2 && title.includes(lower)))
+      || namesByWords(words, knownNames, sourceWords, pageNumbers);
   };
   // The title a document prints, which a read or a search result showed: three words of content or more, word for word.
   const printedTitle = (candidate) => {
@@ -365,7 +367,7 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
     if (open < 0) continue;
     const pieces = item.split(PIECE_SPLIT).map(trimPiece);
     // A path in the item was judged above: known, or already pointed out.
-    if (pieces.some((piece) => piece.includes("/") && (knownPath(piece) || unverified.includes(piece)))) continue;
+    if (pieces.some((piece) => piece.includes("/") && (knownPath(piece) || unverified.has(piece)))) continue;
     const plain = normalizeComparable(item);
     const words = plain.split(" ");
     // Not a source at all: a note, a quotation, a cross-reference, or a whole sentence.
@@ -389,5 +391,5 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
       || !itemWords.size;
     if (!named) flag(item);
   }
-  return unverified;
+  return [...unverified];
 }

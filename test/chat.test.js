@@ -192,10 +192,36 @@ test("checkCitations leaves the answer's own list lines alone", () => {
 
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"*a ".repeat(100_000)}`, `Sources: ${")".repeat(400_000)}`, `Sources: ${"p. 1: \"a\"; ".repeat(50_000)}`, `${"Sources x\n".repeat(50_000)}`, `Sources: ${"**".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"*a ".repeat(100_000)}`, `Sources: ${")".repeat(400_000)}`, `Sources: ${"p. 1: \"a\"; ".repeat(20_000)}`, `${"Sources x\n".repeat(50_000)}`, `Sources: ${"**".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
+  }
+});
+
+test("checkCitations stays linear when very many different items are made up", () => {
+  const known = ledger();
+  // Eight times the items may take about eight times as long; a step that compares every item with every other
+  // one takes sixty-four times as long. The ratio does not depend on how fast the machine is.
+  const shapes = {
+    items: (count) => `Sources: ${Array.from({ length: count }, (_, index) => `Book${index}x`).join("; ")}`,
+    bullets: (count) => `Sources:\n${Array.from({ length: count }, (_, index) => `- Book${index}x`).join("\n")}`,
+    paths: (count) => Array.from({ length: count }, (_, index) => `a/b${index}.md`).join(" "),
+  };
+  for (const [name, make] of Object.entries(shapes)) {
+    const time = (count) => {
+      const text = make(count);
+      let best = Infinity;
+      for (let run = 0; run < 2; run += 1) {
+        const started = performance.now();
+        assert.equal(checkCitations(text, known).length, count);
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const small = Math.max(time(5000), 5);
+    const large = time(40_000);
+    assert.ok(large < small * 24, `${name}: 5000 took ${Math.round(small)} ms, 40000 took ${Math.round(large)} ms`);
   }
 });
 
