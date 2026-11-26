@@ -8,6 +8,9 @@ const MAX_PASSAGES_PER_DOCUMENT = 2;
 // share of the documents searched (one document always counts).
 const RARE_DOCUMENTS = 3;
 const RARE_SHARE = 0.05;
+// A word in the title or file name of that few documents names them, also when a handful of other documents
+// mention it in their text (a folder's list, an inventory): at most this many documents in all.
+const NAMED_DOCUMENTS = 10;
 // The best passage for each of this many rare words comes before the passages that match by meaning alone.
 const RARE_WORDS = 2;
 
@@ -72,22 +75,29 @@ export function createDocumentSearch(db) {
 
   /**
    * The best passage for each query word that only a few of the searched documents hold (a name, a model number,
-   * a rare noun): the ids of at most RARE_WORDS passages, rarest word first. Counting stops at RARE_DOCUMENTS + 1
-   * documents, so a common word costs little.
+   * a rare noun), or that only a few carry in their title or file name while not many more mention it: the ids of
+   * at most RARE_WORDS passages, rarest word first. Counting stops just past the limits, so a common word costs little.
    */
   function rarePassages(queryTerms, filters, filterValues) {
     const where = filters.length ? ` AND ${filters.join(" AND ")}` : "";
     const matching = `FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid JOIN sources s ON s.id=c.source_id WHERE chunks_fts MATCH ?${where}`;
     const total = Number(db.prepare(`SELECT count(*) AS n FROM sources s${filters.length ? ` WHERE ${filters.join(" AND ")}` : ""}`).get(...filterValues).n);
     const few = Math.min(RARE_DOCUMENTS, Math.max(1, Math.ceil(total * RARE_SHARE)));
-    const countDocuments = db.prepare(`SELECT count(*) AS n FROM (SELECT DISTINCT c.source_id ${matching} LIMIT ${RARE_DOCUMENTS + 1})`);
+    const documentsWith = db.prepare(`SELECT DISTINCT c.source_id AS id ${matching} LIMIT ?`);
     const bestPassage = db.prepare(`SELECT c.id, bm25(chunks_fts, 1.0, 2.5, 1.5) AS score ${matching} ORDER BY score LIMIT 1`);
     const rare = [];
     for (const term of queryTerms) {
       const match = ftsQuery(term);
       if (!match) continue;
-      const documents = Number(countDocuments.get(match, ...filterValues).n);
+      const documents = documentsWith.all(match, ...filterValues, NAMED_DOCUMENTS + 1).length;
       if (documents >= 1 && documents <= few) rare.push({ documents, id: Number(bestPassage.get(match, ...filterValues).id) });
+      else if (documents > few && documents <= NAMED_DOCUMENTS) {
+        // Not rare in the text, but perhaps the name of a document: then that document's best passage for the word.
+        const named = documentsWith.all(`{title source_path} : ${match}`, ...filterValues, RARE_DOCUMENTS + 1).map((row) => Number(row.id));
+        if (!named.length || named.length > few) continue;
+        const passage = db.prepare(`SELECT c.id, bm25(chunks_fts, 1.0, 2.5, 1.5) AS score ${matching} AND c.source_id IN (${named.map(() => "?").join(",")}) ORDER BY score LIMIT 1`).get(match, ...filterValues, ...named);
+        if (passage) rare.push({ documents: named.length, id: Number(passage.id) });
+      }
     }
     return new Set(rare.sort((a, b) => a.documents - b.documents).slice(0, RARE_WORDS).map((item) => item.id));
   }
@@ -168,8 +178,12 @@ export function createDocumentSearch(db) {
         const lexicalMatch = matchedTerms.length > 0;
         if (!lexicalMatch && minSemanticScore != null && (candidate.similarity == null || candidate.similarity < minSemanticScore)) continue;
         const key = `${row.corpus}:${row.path}`;
-        if ((perDocument.get(key) || 0) >= MAX_PASSAGES_PER_DOCUMENT) continue;
-        perDocument.set(key, (perDocument.get(key) || 0) + 1);
+        // The passage for a rare word comes on top of its document's passages: the page with the model number
+        // must not push out the page with the answer.
+        if (!promoted.has(candidate.id)) {
+          if ((perDocument.get(key) || 0) >= MAX_PASSAGES_PER_DOCUMENT) continue;
+          perDocument.set(key, (perDocument.get(key) || 0) + 1);
+        }
         results.push({
           corpus: row.corpus,
           path: row.path,
