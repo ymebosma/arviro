@@ -31,6 +31,7 @@ function startFakeOllama() {
   const models = ["chatty:latest"];
   const chats = [];
   const garbled = {};
+  const unloads = [];
   const node = http.createServer((req, res) => {
     if (req.url === "/api/tags") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ models: models.map((name) => ({ name })) })); }
     if (req.url === "/api/chat") {
@@ -87,7 +88,9 @@ function startFakeOllama() {
         // "checker" says it found nothing, and finds it when asked to check; "checker-right" answers and repeats its answer;
         // "checker-silent" returns nothing in the check; "checker-remark" only says that nothing needs to change.
         if (request.model.startsWith("checker")) {
-          const first = request.model === "checker" ? "I could not find that in the library." : `Cool a burn under running water for ten minutes. ${"Keep the person warm. ".repeat(10)}Source: manuals/first-aid.md`;
+          const first = request.model === "checker" ? "I could not find that in the library."
+            : request.model === "checker-long" ? `I could not find that in the library. ${"I searched the manuals and the notes without a result. ".repeat(5)}`
+            : `Cool a burn under running water for ten minutes. ${"Keep the person warm. ".repeat(10)}Source: manuals/first-aid.md`;
           const checking = request.messages.some((message) => message.role === "user" && String(message.content).startsWith("(Note from Arviro, not the user: check your answer"));
           if (!checking) {
             if (last.role === "user") return search(last.content);
@@ -103,6 +106,8 @@ function startFakeOllama() {
           if (request.model === "checker-thinker") { line({ role: "assistant", content: first }); return finish(); }
           if (request.model === "checker-remark") { line({ role: "assistant", content: "Nothing needs to change." }); return finish(); }
           if (request.model === "checker-right") { line({ role: "assistant", content: first }); return finish(); }
+          // "checker-long": a long "not found", then two short sentences with the answer.
+          if (request.model === "checker-long") { line({ role: "assistant", content: "Cool a burn for ten minutes. Source: manuals/first-aid.md" }); return finish(); }
           if (last.role !== "tool") return search("cooling a burn");
           line({ role: "assistant", content: "Cool a burn for ten minutes. Source: manuals/first-aid.md" });
           return finish();
@@ -146,9 +151,16 @@ function startFakeOllama() {
       });
       return;
     }
+    // A request to unload a model (keep_alive 0).
+    if (req.url === "/api/generate") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => { unloads.push(JSON.parse(body)); res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ done: true, done_reason: "unload" })); });
+      return;
+    }
     res.writeHead(404); res.end();
   });
-  return { node, models, chats, start: () => new Promise((resolve) => node.listen(0, "127.0.0.1", resolve)), url: () => `http://127.0.0.1:${node.address().port}` };
+  return { node, models, chats, unloads, start: () => new Promise((resolve) => node.listen(0, "127.0.0.1", resolve)), url: () => `http://127.0.0.1:${node.address().port}` };
 }
 
 /** Send a chat turn and collect the streamed events. */
@@ -753,6 +765,11 @@ test("the check round: the model compares its answer with what it found, and the
     assert.equal(turnOf(right.events).checkChanged, false);
     assert.equal(turnOf(right.events).checkSetAside, false);
     assert.equal(ollama.chats[2].think, undefined, "the check thinks as the chat does, unless chat.checkThink says otherwise");
+    // A long "not found" and then a short answer: that is the correction, not a remark, so it is the answer.
+    const corrected = await ask(always.url, "checker-long");
+    assert.equal(answerOf(corrected.events), "Cool a burn for ten minutes. Source: manuals/first-aid.md");
+    assert.equal(turnOf(corrected.events).checkSetAside, false);
+    assert.equal(turnOf(corrected.events).checkChanged, true);
     assert.match(answerOf(right.events), /^Cool a burn under running water for ten minutes\./);
     // No answer from the check, or a remark instead of the answer: the first answer stands, and is written again.
     for (const model of ["checker-silent", "checker-remark"]) {
@@ -818,10 +835,12 @@ test("arviro eval asks each model the questions through the chat and measures th
   ] }));
   const saveTo = path.join(fixture.root, "eval-out");
   const cli = fileURLToPath(new URL("../bin/arviro.js", import.meta.url));
+  ollama.unloads.length = 0;
   const { code, stdout, stderr } = await new Promise((resolve) => {
     execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "chatty:latest,citer,rescuer", "--save", saveTo], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
   });
   assert.equal(code, 0, stderr);
+  assert.deepEqual(ollama.unloads, [{ model: "chatty:latest", keep_alive: 0 }, { model: "citer", keep_alive: 0 }], "a model is unloaded before the next one starts");
   assert.match(stdout, /\nchatty:latest\n +1\. .*searched library +facts 1\/2 \(missing: ten minutes\)/);
   assert.match(stdout, /\n +2\. .*searched library +WRONG SOURCE/);
   assert.match(stdout, /\nciter\n +1\. .*MADE-UP SOURCE: manuals\/made-up\.md; Imaginary Guide \(library\)/);
@@ -840,10 +859,12 @@ test("arviro eval asks each model the questions through the chat and measures th
   // Several runs: a line per question for each run, the mean and the range in the table, a file per run.
   // "garbler-eval" writes an unreadable tool call the first time only, so the two runs differ.
   const saveRuns = path.join(fixture.root, "eval-runs");
+  ollama.unloads.length = 0;
   const several = await new Promise((resolve) => {
     execFile(process.execPath, [cli, "eval", questions, "--config", configPath, "--model", "garbler-eval", "--runs", "2", "--save", saveRuns], { timeout: 60_000 }, (error, out, err) => resolve({ code: error?.code ?? 0, stdout: out, stderr: err }));
   });
   assert.equal(several.code, 0, several.stderr);
+  assert.deepEqual(ollama.unloads, [{ model: "garbler-eval", keep_alive: 0 }], "each run starts from a fresh load");
   assert.match(several.stdout, /\ngarbler-eval \(run 1 of 2\)\n +1\. .*searched library .* asked again +How long/);
   assert.match(several.stdout, /\ngarbler-eval \(run 2 of 2\)\n +1\. .*searched library +facts 0\/2 \([^)]*\) +How long/);
   assert.match(several.stdout, /\nmodel +runs +questions +answered/);

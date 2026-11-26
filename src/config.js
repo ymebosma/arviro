@@ -413,6 +413,7 @@ export function normalizeConfig(raw, { configPath = null } = {}) {
     // A check round on the answer: "off", "not-found" (only after an answer that says something was not found) or "always".
     check: String(chatInput.check ?? "not-found"),
     // Thinking in the check round: on or off (unset: as chat.think) and its budget (unset: chat.thinkBudget).
+    // Measured: without thinking the check gains less and the model does its checking in the answer.
     checkThink: chatInput.checkThink == null ? null : Boolean(chatInput.checkThink),
     checkThinkBudget: chatInput.checkThinkBudget == null ? null : Number(chatInput.checkThinkBudget),
   };

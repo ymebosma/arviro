@@ -160,16 +160,68 @@ test("checkCitations accepts a printed title that a search result or a later pag
     "the offline library",
   ]) assert.deepEqual(flagged(real), [], real);
   for (const madeUp of ["offline library, Technical Note 12, page 4", "Imaginary Field Handbook, Chapter 13", "Example Router Service Manual, page 3"]) assert.deepEqual(flagged(madeUp), [madeUp], madeUp);
+  // A page title in italics between the source and a section name.
+  known.record("search_library", { source: "wikibooks_nl_all", query: "brood" }, JSON.stringify({ source: "wikibooks_nl_all", results: [{ title: "Kookboek/Brood", snippet: "Brood bakken", read: { source: "wikibooks_nl_all", path: "/kiwix/content/wikibooks_nl_all_2026-01/Kookboek/Brood" } }] }));
+  const withBooks = [...sources, { id: "wikibooks_nl_all", description: "Wikibooks (offline): cookbook and manuals" }];
+  for (const real of ['Wikibooks cookbook, *Brood*, section "Ingredients"', 'Wikibooks cookbook, **Kookboek/Brood**, section "Ingredients"']) assert.deepEqual(checkCitations(`Answer.\n\nSources:\n- ${real}`, known, { sources: withBooks }), [], real);
+  const cake = 'Wikibooks cookbook, *Taart*, section "Ingredients"';
+  assert.deepEqual(checkCitations(`Answer.\n\nSources:\n- ${cake}`, known, { sources: withBooks }), [cake]);
   // "3G/3.75G" is not a file; a path with a real extension still is.
   assert.deepEqual(checkCitations("The modem supports 3G/3.75G; see notes/unknown.md and backups/old.7z.", known, { sources }), ["notes/unknown.md", "backups/old.7z"]);
 });
 
+test("checkCitations leaves the answer's own list lines alone", () => {
+  const known = createLedger();
+  known.record("search_library", { source: "offline", query: "router" }, JSON.stringify({ source: "offline", results: [{ title: "exr ig 2", excerpt: "Status LEDs", read: { source: "offline", path: "router/exr-ig-2.pdf" } }] }));
+  known.record("read_document", { source: "offline", path: "router/exr-ig-2.pdf", offset: 30 }, "source: offline\npath: router/exr-ig-2.pdf\npage 30\n30.1 | Open the address in a browser.");
+  const check = (answer) => checkCitations(answer, known, { sources: [{ id: "offline", description: "Manuals and handbooks" }] });
+  // A page as a bold label with a line quoted from it (the printed page number, not the one of the read).
+  assert.deepEqual(check('Answer.\n\n**Source:** router/exr-ig-2.pdf\n\n- **Page 23:** "Open the address in a browser."\n- **Pagina 24:** „Voer het wachtwoord in."'), []);
+  // A sentence that begins with "Sources" opens no sources block, and a label that introduces something names no source.
+  assert.deepEqual(check("Answer.\n\nSources state the following:\n- three litres of water\n- Imaginary Handbook"), []);
+  assert.deepEqual(check("Answer.\n\nSources:\n- **Recommendation per person per day:**\n- router/exr-ig-2.pdf"), []);
+  // The end of a remark in brackets that held a semicolon.
+  assert.deepEqual(check("Answer.\n\nSources: router/exr-ig-2.pdf, page 30 (192.168.1.1; this address is the default for routers in this series)"), []);
+  // The sources line in its usual shapes still opens the block, and made-up items in it are named.
+  for (const opening of ["Sources:", "**Sources:**", "## Sources", "**Bronnen**", "Bron -", "Sources –"]) {
+    const answer = opening.endsWith("-") || opening.endsWith("–") ? `Answer.\n\n${opening} Imaginary Handbook` : `Answer.\n\n${opening}\n- Imaginary Handbook`;
+    assert.deepEqual(check(answer), ["Imaginary Handbook"], opening);
+  }
+  assert.deepEqual(check("Answer.\n\nSources:\n- Page 99: Imaginary Handbook\n- Imaginary Handbook (see the note; it is the default)"), ["Page 99: Imaginary Handbook", "Imaginary Handbook (see the note; it is the default)"]);
+});
+
 test("checkCitations is linear in the length of the answer", () => {
   const known = ledger();
-  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
+  for (const hostile of ["a/".repeat(200_000), `${"x".repeat(400_000)}/`, `Sources: ${"; a".repeat(100_000)}`, "/".repeat(400_000), `x/${")".repeat(20_000)}`, `(${"(".repeat(200_000)}a/b.md`, `Sources: ${"word ".repeat(100_000)}`, `Sources: ${'"a '.repeat(100_000)}`, `Sources: ${"(pagina ".repeat(100_000)}`, `Sources: ${"p. 1, ".repeat(100_000)}`, `Sources: ${"a1".repeat(200_000)}`, `Sources: ${"*a ".repeat(100_000)}`, `Sources: ${")".repeat(400_000)}`, `Sources: ${"p. 1: \"a\"; ".repeat(20_000)}`, `${"Sources x\n".repeat(50_000)}`, `Sources: ${"**".repeat(200_000)}`, `Sources: ${"0".repeat(400_000)}`, `Sources: ${"safe water at home ".repeat(50_000)}`, `Sources:\n${"- note: x\n".repeat(50_000)}`, "](".repeat(200_000), `Sources: ${".../".repeat(100_000)}a.pdf`, `Sources: ${"a: b - c (d, ".repeat(50_000)}`]) {
     const started = Date.now();
     checkCitations(hostile, known);
     assert.ok(Date.now() - started < 1500, `took ${Date.now() - started} ms`);
+  }
+});
+
+test("checkCitations stays linear when very many different items are made up", () => {
+  const known = ledger();
+  // Eight times the items may take about eight times as long; a step that compares every item with every other
+  // one takes sixty-four times as long. The ratio does not depend on how fast the machine is.
+  const shapes = {
+    items: (count) => `Sources: ${Array.from({ length: count }, (_, index) => `Book${index}x`).join("; ")}`,
+    bullets: (count) => `Sources:\n${Array.from({ length: count }, (_, index) => `- Book${index}x`).join("\n")}`,
+    paths: (count) => Array.from({ length: count }, (_, index) => `a/b${index}.md`).join(" "),
+  };
+  for (const [name, make] of Object.entries(shapes)) {
+    const time = (count) => {
+      const text = make(count);
+      let best = Infinity;
+      for (let run = 0; run < 2; run += 1) {
+        const started = performance.now();
+        assert.equal(checkCitations(text, known).length, count);
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const small = Math.max(time(5000), 5);
+    const large = time(40_000);
+    assert.ok(large < small * 24, `${name}: 5000 took ${Math.round(small)} ms, 40000 took ${Math.round(large)} ms`);
   }
 });
 
@@ -184,6 +236,7 @@ test("isEmptyAnswer: nothing, or a tool call written out", () => {
 test("an error about a tool call Ollama could not read is told apart from other errors", () => {
   assert.equal(isUnreadableToolCall("Ollama answered 500: error parsing tool call: raw='<parameter=query>', err=expected element type <function> but have <parameter>"), true);
   assert.equal(isUnreadableToolCall("expected element type <function> but have <parameter>"), true);
+  assert.equal(isUnreadableToolCall("XML syntax error on line 7: element <function> closed by </parameter>"), true);
   assert.equal(isUnreadableToolCall("Ollama answered 404: model \"nothing\" not found"), false);
   assert.equal(isUnreadableToolCall("Ollama answered 500: model requires more system memory"), false);
   assert.equal(isUnreadableToolCall(undefined), false);
