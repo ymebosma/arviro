@@ -166,6 +166,11 @@ test("checkCitations accepts a printed title that a search result or a later pag
   for (const real of ['Wikibooks cookbook, *Brood*, section "Ingredients"', 'Wikibooks cookbook, **Kookboek/Brood**, section "Ingredients"']) assert.deepEqual(checkCitations(`Answer.\n\nSources:\n- ${real}`, known, { sources: withBooks }), [], real);
   const cake = 'Wikibooks cookbook, *Taart*, section "Ingredients"';
   assert.deepEqual(checkCitations(`Answer.\n\nSources:\n- ${cake}`, known, { sources: withBooks }), [cake]);
+  // A book in chapter files with short names, cited by the name of the folder that holds them.
+  known.record("search_library", { source: "offline", query: "book" }, JSON.stringify({ source: "offline", results: [6, 7].map((chapter) => ({ title: `xx book 2024 0${chapter}`, excerpt: "Chapter text", read: { source: "offline", path: `books/printed-book-title-2024/xx_book_2024_0${chapter}.pdf` } })) }));
+  for (const real of ['*Bron: "Printed Book Title 2024", pagina\'s 146-147.*', "Bron: Printed Book Title, p. 146"]) assert.deepEqual(checkCitations(`Answer.\n\n${real}`, known, { sources }), [], real);
+  assert.deepEqual(checkCitations('Answer.\n\n*Bron: "Imaginary Book Title 2024", pagina\'s 146-147.*', known, { sources }), ['"Imaginary Book Title 2024", pagina\'s 146-147']);
+  assert.deepEqual(checkCitations("Answer.\n\nBron: Books", known, { sources }), ["Books"], "a folder with a one-word name is not a title");
   // "3G/3.75G" is not a file; a path with a real extension still is.
   assert.deepEqual(checkCitations("The modem supports 3G/3.75G; see notes/unknown.md and backups/old.7z.", known, { sources }), ["notes/unknown.md", "backups/old.7z"]);
 });

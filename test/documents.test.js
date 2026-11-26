@@ -273,6 +273,8 @@ test("a literal hit on a word that few documents have reaches the first results,
       fs.writeFileSync(path.join(own.library, `manuals/software-${index}.md`), `# Software update ${index}\n\nInstall the update, restart the program and check the version number ${index}.\n`);
     }
     fs.writeFileSync(path.join(own.library, "manuals/naaimachine.md"), "# Naaimachine\n\nDe naaimachine staat in de kast. Rijg de draad in van boven naar beneden en zet de spoel erin.\n");
+    // A word in the title of one document, and in the text of all the others.
+    fs.writeFileSync(path.join(own.library, "manuals/version-history.md"), "# Version history\n\nWhat changed in each release of the program.\n");
     return { config: fixtureConfig(own, { embedding: { provider: "ollama", model: "test-misled", dimensions: 3 } }), embedder: misled };
   }, async ({ arviro: ownArviro }) => {
     for (const query of ["naaimachine", "naaimachine inrijgen", "hoe rijg ik de draad in de naaimachine"]) {
@@ -287,11 +289,70 @@ test("a literal hit on a word that few documents have reaches the first results,
     const mixed = await ownArviro.search({ source: "library", query: "naaimachine software update version" });
     assert.equal(mixed.results[0].read.path, "manuals/naaimachine.md");
     assert.ok(mixed.results.filter((result) => result.read.path.startsWith("manuals/software-")).length >= mixed.results.length - 2);
+    // A word that names one document but stands in the text of many is not rare: no place is set aside for it.
+    const named = await ownArviro.search({ source: "library", query: "version" });
+    assert.notEqual(named.results[0].read.path, "manuals/version-history.md");
     // The word counts as rare within the sources that are searched: another source's documents play no part.
     const elsewhere = await ownArviro.search({ source: "wiki", query: "naaimachine" });
     assert.ok(!elsewhere.results.some((result) => result.read.path.includes("naaimachine")));
     const publicOnly = await ownArviro.search({ source: "library", query: "naaimachine", scope: "public" });
     assert.equal(publicOnly.results[0].read.path, "manuals/naaimachine.md");
+  });
+});
+
+test("a word in the title or file name of one document finds it, also when files that list documents hold the word too", async () => {
+  const misled = {
+    enabled: true,
+    model: "test-misled",
+    async embed(inputs, prefix) {
+      return inputs.map((input) => (prefix !== PREFIX.query && input.toLowerCase().includes("naaimachine") ? [0.6, 0.8, 0] : [1, 0, 0]));
+    },
+  };
+  await withFixture((own) => {
+    for (let index = 1; index <= 140; index += 1) {
+      fs.writeFileSync(path.join(own.library, `manuals/software-${index}.md`), `# Software update ${index}\n\nInstall the update, restart the program and check the version number ${index}.\n`);
+    }
+    fs.writeFileSync(path.join(own.library, "manuals/naaimachine.md"), "# Naaimachine\n\nDe naaimachine staat in de kast. Rijg de draad in van boven naar beneden en zet de spoel erin.\n");
+    // Four documents hold the word: the note, a note that mentions it, the folder's list and the library's inventory.
+    fs.writeFileSync(path.join(own.library, "manuals/kast.md"), "# Kast\n\nIn de kast staan de strijkplank en de naaimachine.\n");
+    fs.writeFileSync(path.join(own.library, "manuals/README.md"), "# Manuals\n\n- naaimachine.md: de naaimachine\n- kast.md: wat er in de kast staat\n");
+    fs.writeFileSync(path.join(own.library, "inventory.tsv"), "path\ttitle\nmanuals/naaimachine.md\tNaaimachine\nmanuals/kast.md\tKast\n");
+    return { config: fixtureConfig(own, { embedding: { provider: "ollama", model: "test-misled", dimensions: 3 } }), embedder: misled };
+  }, async ({ arviro: ownArviro }) => {
+    for (const query of ["naaimachine", "naaimachine inrijgen", "hoe rijg ik de draad in de naaimachine"]) {
+      const found = await ownArviro.search({ source: "library", query });
+      assert.equal(found.results[0].read.path, "manuals/naaimachine.md", query);
+    }
+  });
+});
+
+test("a word that names a document adds no passage when that document is in the results already", async () => {
+  // A brand name in the file names of two manuals and in the text of two other documents. The question is about
+  // the oven's timer, and the two pages about the timer are found by meaning.
+  const concepts = conceptEmbedder([["timer", "countdown"], ["unused"]]);
+  await withFixture((own) => {
+    for (let index = 1; index <= 140; index += 1) {
+      fs.writeFileSync(path.join(own.library, `manuals/software-${index}.md`), `# Software update ${index}\n\nInstall the update, restart the program and check the version number ${index}.\n`);
+    }
+    const lines = (text) => Array.from({ length: 30 }, (_, index) => `${text} (${index + 1}).`).join("\n");
+    fs.writeFileSync(path.join(own.library, "manuals/acme-oven.md"), [
+      "# Oven",
+      lines("Thank you for choosing Acme. Acme has built ovens for a long time and Acme stands behind them"),
+      lines("Countdown, part one: turn the left dial to the minutes you need"),
+      lines("Countdown, part two: the oven switches off when the minutes are over"),
+    ].join("\n\n"));
+    fs.writeFileSync(path.join(own.library, "manuals/acme-radio.md"), "# Radio\n\nTurn the dial to find a station.\n");
+    fs.writeFileSync(path.join(own.library, "manuals/kitchen.md"), "# Kitchen\n\nThe oven and the radio in the kitchen are both from Acme.\n");
+    fs.writeFileSync(path.join(own.library, "manuals/warranty.md"), "# Warranty\n\nAcme gives two years of warranty.\n");
+    return { config: fixtureConfig(own, { embedding: { provider: "ollama", model: "test-concepts", dimensions: 4 } }), embedder: concepts };
+  }, async ({ arviro: ownArviro }) => {
+    const found = await ownArviro.search({ source: "library", query: "acme timer" });
+    const oven = found.results.filter((result) => result.read.path === "manuals/acme-oven.md").map((result) => result.read.offset);
+    // The oven manual is found without help, so the brand in its file name sets no place aside: the first result is
+    // the page that matches both ways, not the page that repeats the brand, and the manual keeps its two passages.
+    assert.equal(found.results[0].read.path, "manuals/acme-oven.md");
+    assert.equal(found.results[0].read.offset, 28, JSON.stringify(found.results.map((result) => result.read)));
+    assert.equal(oven.length, 2);
   });
 });
 

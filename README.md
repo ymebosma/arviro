@@ -22,7 +22,7 @@ Two tools:
 Some things are built in because small local models need them:
 
 - **One source per search.** The model chooses a source; the tool description lists your sources with your own descriptions.
-- **Search by meaning and by words.** Passages are found with SQLite full-text search and, when Ollama is available, with embeddings. A Dutch question finds an English manual. A word that only a few documents hold (a name, a model number, a rare noun) puts its best passage among the first results, also when the meaning of a short query points elsewhere.
+- **Search by meaning and by words.** Passages are found with SQLite full-text search and, when Ollama is available, with embeddings. A Dutch question finds an English manual. A word that only a few documents hold (a name, a model number, a rare noun) puts its best passage among the first results, also when the meaning of a short query points elsewhere; a word in the title or file name of only a few documents does the same for a document that would otherwise be missing.
 - **An evidence check for "who is X?" questions.** A name only counts as confirmed when a source has exactly that title. An unknown name gives "not found", and a misspelled name in an encyclopedia gives "did you mean…", so the model has no reason to make something up.
 - **Bounded answers.** Results are short, long documents are read in parts, and each part says how to continue.
 - **Protection against loops.** A repeated identical call gets the earlier result back with a note to stop, and there is a call budget per minute.

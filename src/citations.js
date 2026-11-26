@@ -304,7 +304,12 @@ export function checkCitations(answer, ledger, { sources = [] } = {}) {
   const paths = known.filter((item) => item.path).map((item) => normalPath(item.path));
   const titles = known.map((item) => String(item.title || "").toLowerCase()).filter((title) => title.length >= 3).map((title) => ({ title, long: contentWords(title).size > 2 }));
   // The words of each title and each file name, for an item that cites a document in its own words.
-  const knownNames = known.flatMap((item) => [contentWords(item.title || ""), contentWords(String(item.path || "").split("/").at(-1).replace(/\.[a-z0-9]{1,5}$/i, ""))]).filter((names) => names.size);
+  const knownNames = known.flatMap((item) => {
+    const segments = String(item.path || "").split("/");
+    // A folder with a name of its own is what the documents in it are called together: a book in chapter files.
+    const folders = segments.slice(0, -1).map((segment) => contentWords(segment)).filter((names) => names.size >= 2);
+    return [contentWords(item.title || ""), contentWords(segments.at(-1).replace(/\.[a-z0-9]{1,5}$/i, "")), ...folders];
+  }).filter((names) => names.size);
   const sourceIds = new Set([...ledger.sources, ...known.map((item) => item.source)].map((id) => id.toLowerCase()));
   // What a searched source is called: its id and the words of its description.
   const described = sources.filter((source) => sourceIds.has(String(source.id).toLowerCase()));
