@@ -326,23 +326,33 @@ test("a word in the title or file name of one document finds it, also when files
   });
 });
 
-test("the passage for a rare word does not take the place of another passage of its document", async () => {
-  // The model number is on the title page; the answer is on two later pages that match by meaning.
-  const concepts = conceptEmbedder([["wiring", "cabling"], ["unused"]]);
+test("a word that names a document adds no passage when that document is in the results already", async () => {
+  // A brand name in the file names of two manuals and in the text of two other documents. The question is about
+  // the oven's timer, and the two pages about the timer are found by meaning.
+  const concepts = conceptEmbedder([["timer", "countdown"], ["unused"]]);
   await withFixture((own) => {
+    for (let index = 1; index <= 140; index += 1) {
+      fs.writeFileSync(path.join(own.library, `manuals/software-${index}.md`), `# Software update ${index}\n\nInstall the update, restart the program and check the version number ${index}.\n`);
+    }
     const lines = (text) => Array.from({ length: 30 }, (_, index) => `${text} (${index + 1}).`).join("\n");
-    fs.writeFileSync(path.join(own.library, "manuals/router.md"), [
-      "# Router XR500",
-      lines("Unpack the box and keep the leaflet with the serial number"),
-      lines("Cabling, part one: connect the modem to the blue port before anything else"),
-      lines("Cabling, part two: connect the computer to one of the yellow ports"),
+    fs.writeFileSync(path.join(own.library, "manuals/acme-oven.md"), [
+      "# Oven",
+      lines("Thank you for choosing Acme. Acme has built ovens for a long time and Acme stands behind them"),
+      lines("Countdown, part one: turn the left dial to the minutes you need"),
+      lines("Countdown, part two: the oven switches off when the minutes are over"),
     ].join("\n\n"));
+    fs.writeFileSync(path.join(own.library, "manuals/acme-radio.md"), "# Radio\n\nTurn the dial to find a station.\n");
+    fs.writeFileSync(path.join(own.library, "manuals/kitchen.md"), "# Kitchen\n\nThe oven and the radio in the kitchen are both from Acme.\n");
+    fs.writeFileSync(path.join(own.library, "manuals/warranty.md"), "# Warranty\n\nAcme gives two years of warranty.\n");
     return { config: fixtureConfig(own, { embedding: { provider: "ollama", model: "test-concepts", dimensions: 4 } }), embedder: concepts };
   }, async ({ arviro: ownArviro }) => {
-    const found = await ownArviro.search({ source: "library", query: "XR500 wiring" });
-    const passages = found.results.filter((result) => result.read.path === "manuals/router.md").map((result) => result.read.offset);
-    assert.equal(found.results[0].read.offset, 1, "the title page, for the model number");
-    assert.equal(passages.length, 3, `the title page and both pages about cabling: ${JSON.stringify(passages)}`);
+    const found = await ownArviro.search({ source: "library", query: "acme timer" });
+    const oven = found.results.filter((result) => result.read.path === "manuals/acme-oven.md").map((result) => result.read.offset);
+    // The oven manual is found without help, so the brand in its file name sets no place aside: the first result is
+    // the page that matches both ways, not the page that repeats the brand, and the manual keeps its two passages.
+    assert.equal(found.results[0].read.path, "manuals/acme-oven.md");
+    assert.equal(found.results[0].read.offset, 28, JSON.stringify(found.results.map((result) => result.read)));
+    assert.equal(oven.length, 2);
   });
 });
 

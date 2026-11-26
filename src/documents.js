@@ -11,7 +11,8 @@ const RARE_SHARE = 0.05;
 // A word in the title or file name of that few documents names them, also when a handful of other documents
 // mention it in their text (a folder's list, an inventory): at most this many documents in all.
 const NAMED_DOCUMENTS = 10;
-// The best passage for each of this many rare words comes before the passages that match by meaning alone.
+// At most this many passages are promoted for rare words and document names: they come before the passages that
+// match by meaning alone.
 const RARE_WORDS = 2;
 
 export function createDocumentSearch(db) {
@@ -74,9 +75,13 @@ export function createDocumentSearch(db) {
   }
 
   /**
-   * The best passage for each query word that only a few of the searched documents hold (a name, a model number,
-   * a rare noun), or that only a few carry in their title or file name while not many more mention it: the ids of
-   * at most RARE_WORDS passages, rarest word first. Counting stops just past the limits, so a common word costs little.
+   * Passages that deserve a place whatever the embeddings say, rarest word first:
+   * - `rare`: the best passage for each query word that only a few of the searched documents hold (a name, a model
+   *   number, a rare noun). Such a word says which page.
+   * - `named`: the best passage of the documents that carry a query word in their title or file name, when only a
+   *   few do and not many more mention it. Such a word says which document, not which page, so it is used only
+   *   when none of those documents is in the results (`sources` are their ids).
+   * Counting stops just past the limits, so a common word costs little.
    */
   function rarePassages(queryTerms, filters, filterValues) {
     const where = filters.length ? ` AND ${filters.join(" AND ")}` : "";
@@ -86,6 +91,7 @@ export function createDocumentSearch(db) {
     const documentsWith = db.prepare(`SELECT DISTINCT c.source_id AS id ${matching} LIMIT ?`);
     const bestPassage = db.prepare(`SELECT c.id, bm25(chunks_fts, 1.0, 2.5, 1.5) AS score ${matching} ORDER BY score LIMIT 1`);
     const rare = [];
+    const named = [];
     for (const term of queryTerms) {
       const match = ftsQuery(term);
       if (!match) continue;
@@ -93,13 +99,14 @@ export function createDocumentSearch(db) {
       if (documents >= 1 && documents <= few) rare.push({ documents, id: Number(bestPassage.get(match, ...filterValues).id) });
       else if (documents > few && documents <= NAMED_DOCUMENTS) {
         // Not rare in the text, but perhaps the name of a document: then that document's best passage for the word.
-        const named = documentsWith.all(`{title source_path} : ${match}`, ...filterValues, RARE_DOCUMENTS + 1).map((row) => Number(row.id));
-        if (!named.length || named.length > few) continue;
-        const passage = db.prepare(`SELECT c.id, bm25(chunks_fts, 1.0, 2.5, 1.5) AS score ${matching} AND c.source_id IN (${named.map(() => "?").join(",")}) ORDER BY score LIMIT 1`).get(match, ...filterValues, ...named);
-        if (passage) rare.push({ documents: named.length, id: Number(passage.id) });
+        const sources = documentsWith.all(`{title source_path} : ${match}`, ...filterValues, RARE_DOCUMENTS + 1).map((row) => Number(row.id));
+        if (!sources.length || sources.length > few) continue;
+        const passage = db.prepare(`SELECT c.id, bm25(chunks_fts, 1.0, 2.5, 1.5) AS score ${matching} AND c.source_id IN (${sources.map(() => "?").join(",")}) ORDER BY score LIMIT 1`).get(match, ...filterValues, ...sources);
+        if (passage) named.push({ documents: sources.length, id: Number(passage.id), sources });
       }
     }
-    return new Set(rare.sort((a, b) => a.documents - b.documents).slice(0, RARE_WORDS).map((item) => item.id));
+    const rarestFirst = (a, b) => a.documents - b.documents;
+    return { rare: rare.sort(rarestFirst).slice(0, RARE_WORDS), named: named.sort(rarestFirst) };
   }
 
   /**
@@ -148,58 +155,68 @@ export function createDocumentSearch(db) {
         WHERE chunks_fts MATCH ?${filters.length ? ` AND ${filters.join(" AND ")}` : ""} ORDER BY score LIMIT ${LEXICAL_CANDIDATES}
       `).all(match, ...filterValues) : [];
       const lexicalRanks = new Map(lexical.map((row, index) => [Number(row.id), index + 1]));
-      const promoted = rarePassages(queryTerms, filters, filterValues);
-      // A promoted passage is a literal hit by definition; with many other words in the query it can fall outside the list.
-      for (const id of promoted) if (!lexicalRanks.has(id)) lexicalRanks.set(id, LEXICAL_CANDIDATES);
       const semantic = queryVector && !embeddingMismatch ? semanticCandidates(store, queryVector, isAllowed) : [];
       const semanticRanks = new Map(semantic.map((row, index) => [row.id, { rank: index + 1, similarity: row.similarity }]));
-
-      // Reciprocal rank fusion, slightly favouring meaning over literal matches. On its own that puts the best
-      // literal-only passage behind fourteen meaning-only ones, and the embedding of a short query is often
-      // confidently wrong; so the best passage for a rare word counts as the best match by meaning too.
-      const fused = [...new Set([...lexicalRanks.keys(), ...semanticRanks.keys()])].map((id) => {
-        const lexicalRank = lexicalRanks.get(id);
-        const semanticRank = semanticRanks.get(id);
-        return {
-          id,
-          score: (lexicalRank ? 0.45 / (60 + lexicalRank) : 0) + (promoted.has(id) ? 0.55 / 61 : semanticRank ? 0.55 / (60 + semanticRank.rank) : 0),
-          similarity: semanticRank?.similarity ?? null,
-        };
-      }).sort((a, b) => b.score - a.score);
-
       const get = db.prepare("SELECT c.*, s.corpus, s.path, s.content_path, s.kind, s.title FROM chunks c JOIN sources s ON s.id=c.source_id WHERE c.id=?");
-      const results = [];
-      const perDocument = new Map();
-      for (const candidate of fused) {
-        const row = get.get(candidate.id);
-        if (!row || !isAllowed(row)) continue;
-        const normalizedContent = normalizeComparable(`${row.title}\n${row.content}`);
-        const matchedTerms = queryTerms.filter((term) => normalizedContent.includes(normalizeComparable(term)));
-        const lexicalMatch = matchedTerms.length > 0;
-        if (!lexicalMatch && minSemanticScore != null && (candidate.similarity == null || candidate.similarity < minSemanticScore)) continue;
-        const key = `${row.corpus}:${row.path}`;
-        // The passage for a rare word comes on top of its document's passages: the page with the model number
-        // must not push out the page with the answer.
-        if (!promoted.has(candidate.id)) {
+
+      /** The results with these passages promoted, and the ids of the documents among them. */
+      const assemble = (promoted) => {
+        // Reciprocal rank fusion, slightly favouring meaning over literal matches. On its own that puts the best
+        // literal-only passage behind fourteen meaning-only ones, and the embedding of a short query is often
+        // confidently wrong; so a promoted passage counts as the best match by meaning too. It is a literal hit by
+        // definition; with many other words in the query it can fall outside the list of literal candidates.
+        const fused = [...new Set([...lexicalRanks.keys(), ...semanticRanks.keys(), ...promoted])].map((id) => {
+          const lexicalRank = lexicalRanks.get(id) ?? (promoted.has(id) ? LEXICAL_CANDIDATES : null);
+          const semanticRank = semanticRanks.get(id);
+          return {
+            id,
+            score: (lexicalRank ? 0.45 / (60 + lexicalRank) : 0) + (promoted.has(id) ? 0.55 / 61 : semanticRank ? 0.55 / (60 + semanticRank.rank) : 0),
+            similarity: semanticRank?.similarity ?? null,
+          };
+        }).sort((a, b) => b.score - a.score);
+        const results = [];
+        const documents = new Set();
+        const perDocument = new Map();
+        for (const candidate of fused) {
+          const row = get.get(candidate.id);
+          if (!row || !isAllowed(row)) continue;
+          const normalizedContent = normalizeComparable(`${row.title}\n${row.content}`);
+          const matchedTerms = queryTerms.filter((term) => normalizedContent.includes(normalizeComparable(term)));
+          const lexicalMatch = matchedTerms.length > 0;
+          if (!lexicalMatch && minSemanticScore != null && (candidate.similarity == null || candidate.similarity < minSemanticScore)) continue;
+          const key = `${row.corpus}:${row.path}`;
           if ((perDocument.get(key) || 0) >= MAX_PASSAGES_PER_DOCUMENT) continue;
           perDocument.set(key, (perDocument.get(key) || 0) + 1);
+          documents.add(Number(row.source_id));
+          results.push({
+            corpus: row.corpus,
+            path: row.path,
+            title: row.title,
+            kind: row.kind,
+            page: row.page,
+            lines: row.line_start ? `${row.line_start}-${row.line_end}` : null,
+            lineStart: row.line_start,
+            lexicalMatch,
+            matchedTerms: matchedTerms.slice(0, 5),
+            semanticScore: candidate.similarity == null ? null : Number(candidate.similarity.toFixed(4)),
+            excerpt: row.content.slice(0, 1200),
+          });
+          if (results.length >= limit) break;
         }
-        results.push({
-          corpus: row.corpus,
-          path: row.path,
-          title: row.title,
-          kind: row.kind,
-          page: row.page,
-          lines: row.line_start ? `${row.line_start}-${row.line_end}` : null,
-          lineStart: row.line_start,
-          lexicalMatch,
-          matchedTerms: matchedTerms.slice(0, 5),
-          semanticScore: candidate.similarity == null ? null : Number(candidate.similarity.toFixed(4)),
-          excerpt: row.content.slice(0, 1200),
-        });
-        if (results.length >= limit) break;
+        return { results, documents };
+      };
+
+      const { rare, named } = rarePassages(queryTerms, filters, filterValues);
+      const promoted = new Set(rare.map((item) => item.id));
+      let found = assemble(promoted);
+      // A word that names a document gets a place only while that document is missing from the results.
+      for (const candidate of named) {
+        if (promoted.size >= RARE_WORDS) break;
+        if (candidate.sources.some((id) => found.documents.has(id))) continue;
+        promoted.add(candidate.id);
+        found = assemble(promoted);
       }
-      return { results, embeddingMismatch };
+      return { results: found.results, embeddingMismatch };
     } finally {
       db.exec("COMMIT");
     }
